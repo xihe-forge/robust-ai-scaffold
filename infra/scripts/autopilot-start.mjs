@@ -90,6 +90,31 @@ function getNextTask() {
   return null;
 }
 
+function getReadyTasks() {
+  const tasks = getTasks();
+  const ready = [];
+
+  for (const priority of ["P0", "P1", "P2"]) {
+    for (const task of tasks) {
+      if (task.status !== "todo" || task.priority !== priority) {
+        continue;
+      }
+
+      const dependencies = task.depends_on ?? [];
+      const depsSatisfied = dependencies.every((dependencyId) => {
+        const dependencyTask = tasks.find((candidate) => candidate.id === dependencyId);
+        return !dependencyTask || dependencyTask.status === "done";
+      });
+
+      if (depsSatisfied) {
+        ready.push(task);
+      }
+    }
+  }
+
+  return ready;
+}
+
 function getProgressTail() {
   const content = readText("dev/progress.txt", "progress.txt not found");
   const lines = content.split(/\r?\n/u).filter(Boolean);
@@ -105,24 +130,23 @@ function getTaskProgressSummary() {
 }
 
 function resolveModel(task, config) {
-  if (!task) {
-    return config.models.planning;
-  }
-
-  if (["planning", "research", "review", "docs"].includes(task.type)) {
-    return config.models.planning;
-  }
-
-  return config.models.execution;
+  return config.models.planning;
 }
 
-function buildPrompt(task, config) {
+function buildPrompt(readyTasks, config) {
   const progress = getProgressTail();
   const summary = getTaskProgressSummary();
+  const task = readyTasks.length > 0 ? readyTasks[0] : null;
   const sharedHeader = [
     "You are the continuous delivery agent for this repository.",
     "Operate autonomously and do not ask the user questions unless blocked by missing external information.",
-    "Always read AGENTS.md, .planning/STATE.md, .planning/ROADMAP.md, dev/task.json, and dev/progress.txt before making changes.",
+    "",
+    "## Mandatory Reading (every round)",
+    "Read these files before making any changes:",
+    "- AGENTS.md (role division, parallel strategy, quality gates)",
+    "- .planning/STATE.md (current status)",
+    "- .planning/ROADMAP.md (phase sequence)",
+    "- dev/task.json (task queue)",
     "",
     `Current task completion: ${summary.done}/${summary.total}`,
     "",
@@ -131,11 +155,55 @@ function buildPrompt(task, config) {
     ""
   ].join("\n");
 
+  if (readyTasks.length > 1) {
+    let taskList = "";
+    for (let i = 0; i < readyTasks.length; i++) {
+      const t = readyTasks[i];
+      const criteria = (t.acceptance_criteria ?? []).map((item) => `- ${item}`).join("\n");
+      taskList += [
+        `### Task ${i + 1}`,
+        `- ID: ${t.id}`,
+        `- Name: ${t.name}`,
+        `- Type: ${t.type}`,
+        `- Priority: ${t.priority}`,
+        `- Description: ${t.description}`,
+        "Acceptance criteria:",
+        criteria || "- (none provided)",
+        ""
+      ].join("\n");
+    }
+
+    return [
+      sharedHeader,
+      `## Ready Tasks (${readyTasks.length} tasks with all dependencies satisfied)`,
+      "",
+      "The following tasks are ALL ready to execute. Execute as many in parallel as possible.",
+      "",
+      taskList,
+      "## Execution Strategy",
+      "You are the Opus orchestrator. Follow this workflow:",
+      "",
+      "1. Read AGENTS.md and relevant docs for these tasks.",
+      "2. Launch one Sonnet sub-Agent per task, all in parallel:",
+      "   - EVERY Agent MUST use `isolation: 'worktree'` and `model: 'sonnet'`.",
+      "   - Each Agent gets its own git branch and working directory.",
+      "3. After ALL Agents complete:",
+      "   - Review each Agent's changes.",
+      "   - Merge branches sequentially into the current branch.",
+      "   - Resolve conflicts if any.",
+      "4. Run verification on the merged result.",
+      "5. Update dev/task.json — set ALL completed tasks to done.",
+      "6. Update dev/progress.txt with what was accomplished for each task.",
+      "7. Update .planning/STATE.md.",
+      "8. Git commit all final changes together."
+    ].join("\n");
+  }
+
   if (task) {
     const criteria = (task.acceptance_criteria ?? []).map((item) => `- ${item}`).join("\n");
     return [
       sharedHeader,
-      "Next runnable task:",
+      "## Current Task",
       `- ID: ${task.id}`,
       `- Name: ${task.name}`,
       `- Type: ${task.type}`,
@@ -145,18 +213,33 @@ function buildPrompt(task, config) {
       "Acceptance criteria:",
       criteria || "- (none provided)",
       "",
-      "Execution rules:",
-      "1. Complete the task in the smallest useful slice.",
-      "2. Update dev/task.json, dev/progress.txt, and .planning/STATE.md before finishing.",
-      "3. Run a verification step before declaring the task complete.",
-      "4. If blocked, set the task status to blocked and record the reason in progress/state.",
-      "5. If the task is done, mark it done and move the project forward."
+      "## Execution Strategy",
+      "You are the Opus orchestrator. Follow this workflow:",
+      "",
+      "1. Read AGENTS.md and relevant docs (PRD, tech spec) for this task.",
+      "2. Analyze the task — break into independent subtasks if possible.",
+      "3. Launch Sonnet sub-Agents with worktree isolation for parallel execution:",
+      "   - EVERY coding Agent MUST use `isolation: 'worktree'` so each gets its own git branch.",
+      "   - EVERY Agent MUST include `model: 'sonnet'` explicitly.",
+      "   - With worktree isolation, agents CAN safely modify the same files.",
+      "   - Example: Agent(model: 'sonnet', isolation: 'worktree', description: '...', prompt: '...')",
+      "   - If multiple independent subtasks exist, launch ALL Agents in parallel.",
+      "   - If the task is small enough for a single Agent, still use worktree isolation.",
+      "4. After ALL worktree Agents complete:",
+      "   - Review each Agent's changes (read the diff or key files).",
+      "   - Merge changes from each worktree branch into the current branch.",
+      "   - Resolve conflicts if any arise.",
+      "5. Run verification: build, lint, or test as appropriate.",
+      "6. Update dev/task.json (set status to done).",
+      "7. Update dev/progress.txt with what was accomplished.",
+      "8. Update .planning/STATE.md if any decisions were made.",
+      "9. Git commit all final changes together."
     ].join("\n");
   }
 
   const idleInstruction = config.behavior.allowTaskGenerationWhenIdle
-    ? "No runnable todo task exists. Inspect REQUIREMENTS, ROADMAP, and STATE. If the current milestone still has unfinished work, create 1-3 small next tasks in dev/task.json, update STATE/progress, and continue the project."
-    : "No runnable todo task exists. Audit the repository, summarize whether the current milestone is complete, and stop if there is no clear next task.";
+    ? "No runnable todo task exists. Read AGENTS.md, then inspect REQUIREMENTS, ROADMAP, and STATE. If the current milestone still has unfinished work, create 1-3 small next tasks in dev/task.json, update STATE/progress, and continue the project."
+    : "No runnable todo task exists. Read AGENTS.md, then audit the repository, summarize whether the current milestone is complete, and stop if there is no clear next task.";
 
   return [
     sharedHeader,
@@ -551,9 +634,10 @@ async function main() {
     }
 
     const currentState = loadState();
-    const task = getNextTask();
+    const readyTasks = getReadyTasks();
+    const task = readyTasks.length > 0 ? readyTasks[0] : null;
     const model = resolveModel(task, config);
-    const prompt = buildPrompt(task, config);
+    const prompt = buildPrompt(readyTasks, config);
 
     saveState({
       ...currentState,
