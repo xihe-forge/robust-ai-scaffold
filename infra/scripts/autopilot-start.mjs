@@ -63,7 +63,8 @@ function clearStopSignal() {
 }
 
 function getTasks() {
-  return readJson("dev/task.json", { tasks: [] }).tasks ?? [];
+  const raw = readJson("dev/task.json", { tasks: [] }).tasks ?? [];
+  return raw.filter((task) => task && task.id);
 }
 
 function getNextTask() {
@@ -682,18 +683,31 @@ async function main() {
     });
 
     if (result.exitCode === 0) {
-      const nextTask = getNextTask();
-      if (!nextTask && !config.behavior.allowTaskGenerationWhenIdle) {
-        console.log("No runnable tasks remain. Autopilot is stopping.");
-        break;
+      const readyCheck = getReadyTasks();
+      const finalSummary = getTaskProgressSummary();
+
+      if (readyCheck.length === 0) {
+        if (finalSummary.done >= finalSummary.total && finalSummary.total > 0) {
+          console.log(`All tasks completed! (${finalSummary.done}/${finalSummary.total})`);
+          break;
+        }
+
+        if (!config.behavior.allowTaskGenerationWhenIdle) {
+          console.log(`No ready tasks. ${finalSummary.done}/${finalSummary.total} done. Remaining tasks may be blocked or all complete.`);
+          break;
+        }
+
+        if (task === null) {
+          console.log(`No runnable tasks remain after idle planning round. (${finalSummary.done}/${finalSummary.total})`);
+          break;
+        }
       }
-      if (!nextTask && task === null) {
-        console.log("No runnable tasks remain after idle planning round. Autopilot is stopping.");
-        break;
-      }
+
       if (runOnce) {
         break;
       }
+
+      console.log(`Round done, next round... (${readyCheck.length} tasks ready, ${finalSummary.done}/${finalSummary.total} done)`);
       continue;
     }
 
