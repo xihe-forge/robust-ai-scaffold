@@ -1,10 +1,102 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, openSync, closeSync, unlinkSync, readFileSync, writeFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { spawnSync } from "node:child_process";
 import process from "node:process";
 
 export const rootDir = process.cwd();
+
+// --- File Locking ---
+
+const LOCK_STALE_TIMEOUT_MS = 30_000; // 30 seconds
+const LOCK_RETRY_COUNT = 10;
+const LOCK_RETRY_DELAY_MS = 100;
+
+/** Set of lock file paths currently held by this process, for cleanup on exit. */
+const heldLocks = new Set();
+
+function registerExitCleanup() {
+  if (registerExitCleanup._registered) return;
+  registerExitCleanup._registered = true;
+
+  const cleanup = () => {
+    for (const lockPath of heldLocks) {
+      try {
+        unlinkSync(lockPath);
+      } catch {
+        // ignore
+      }
+    }
+  };
+
+  process.on("exit", cleanup);
+  process.on("SIGINT", () => { cleanup(); process.exit(130); });
+  process.on("SIGTERM", () => { cleanup(); process.exit(143); });
+  process.on("uncaughtException", (err) => { cleanup(); throw err; });
+}
+
+registerExitCleanup();
+
+/**
+ * Acquire a lockfile for the given absolute path, retrying up to LOCK_RETRY_COUNT times.
+ * Returns the lock file path on success, throws on failure.
+ */
+function acquireLock(absolutePath) {
+  const lockPath = `${absolutePath}.lock`;
+
+  for (let attempt = 0; attempt <= LOCK_RETRY_COUNT; attempt++) {
+    // Clear stale lock
+    if (existsSync(lockPath)) {
+      let stale = false;
+      try {
+        const stat = statSync(lockPath);
+        stale = Date.now() - stat.mtimeMs > LOCK_STALE_TIMEOUT_MS;
+      } catch {
+        stale = true;
+      }
+      if (stale) {
+        try { unlinkSync(lockPath); } catch { /* ignore */ }
+      }
+    }
+
+    // Attempt atomic creation
+    try {
+      const fd = openSync(lockPath, "wx");
+      closeSync(fd);
+      heldLocks.add(lockPath);
+      return lockPath;
+    } catch (err) {
+      if (err.code !== "EEXIST" || attempt === LOCK_RETRY_COUNT) {
+        throw new Error(`Could not acquire lock for ${absolutePath} after ${attempt} attempts: ${err.message}`);
+      }
+      // Synchronous sleep via a busy-wait is avoided; we use a short Atomics wait instead.
+      const sharedBuffer = new SharedArrayBuffer(4);
+      Atomics.wait(new Int32Array(sharedBuffer), 0, 0, LOCK_RETRY_DELAY_MS);
+    }
+  }
+}
+
+/**
+ * Release a previously acquired lockfile.
+ */
+function releaseLock(lockPath) {
+  try { unlinkSync(lockPath); } catch { /* ignore */ }
+  heldLocks.delete(lockPath);
+}
+
+/**
+ * Execute callback while holding an exclusive lockfile for filePath.
+ * filePath may be absolute or relative (resolved via resolvePath).
+ */
+export function withFileLock(filePath, callback) {
+  const absolutePath = path.isAbsolute(filePath) ? filePath : path.join(rootDir, filePath);
+  const lockPath = acquireLock(absolutePath);
+  try {
+    return callback();
+  } finally {
+    releaseLock(lockPath);
+  }
+}
 
 export function resolvePath(relativePath) {
   if (path.isAbsolute(relativePath)) {
@@ -31,7 +123,10 @@ export function readJson(relativePath, fallback = null) {
 }
 
 export function writeJson(relativePath, data) {
-  writeFileSync(resolvePath(relativePath), `${JSON.stringify(data, null, 2)}\n`, "utf8");
+  const absolutePath = resolvePath(relativePath);
+  withFileLock(absolutePath, () => {
+    writeFileSync(absolutePath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+  });
 }
 
 export function readText(relativePath, fallback = "") {
@@ -43,7 +138,10 @@ export function readText(relativePath, fallback = "") {
 }
 
 export function writeText(relativePath, content) {
-  writeFileSync(resolvePath(relativePath), content, "utf8");
+  const absolutePath = resolvePath(relativePath);
+  withFileLock(absolutePath, () => {
+    writeFileSync(absolutePath, content, "utf8");
+  });
 }
 
 export function slugify(value) {

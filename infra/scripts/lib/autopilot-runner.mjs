@@ -111,7 +111,9 @@ export const DEFAULT_AUTOPILOT_CONFIG = {
   loop: {
     waitMinutes: 30,
     maxRetries: 12,
-    heartbeatSeconds: 10
+    heartbeatSeconds: 10,
+    taskTimeoutSeconds: 1800,
+    maxTaskRetries: 2
   },
   behavior: {
     allowTaskGenerationWhenIdle: true,

@@ -95,9 +95,24 @@ function getReadyTasks() {
   const tasks = getTasks();
   const ready = [];
 
+  const cycles = detectCycles(tasks);
+  const cycleTaskIds = new Set();
+  for (const cycle of cycles) {
+    const cycleWithoutDuplicate = cycle.slice(0, -1);
+    const label = cycle.join(" → ");
+    console.warn(`WARNING: Circular dependency detected: ${label}`);
+    for (const id of cycleWithoutDuplicate) {
+      cycleTaskIds.add(id);
+    }
+  }
+
   for (const priority of ["P0", "P1", "P2"]) {
     for (const task of tasks) {
       if (task.status !== "todo" || task.priority !== priority) {
+        continue;
+      }
+
+      if (cycleTaskIds.has(task.id)) {
         continue;
       }
 
@@ -281,8 +296,9 @@ async function waitWithCountdown(minutes) {
   return true;
 }
 
-async function waitForRetry({ fallbackMinutes, failureHint }) {
-  const parsedSeconds = parseQuotaResetWaitSeconds(failureHint);
+async function waitForRetry({ fallbackMinutes, failureHint, retryAfterSeconds = null }) {
+  // Prefer the structured retryAfterSeconds, then try to parse from text hint
+  const parsedSeconds = retryAfterSeconds ?? parseQuotaResetWaitSeconds(failureHint);
   if (!parsedSeconds) {
     return waitWithCountdown(fallbackMinutes);
   }
@@ -312,26 +328,118 @@ function writeAssistantText(text, outputStream) {
   outputStream.write(`${normalized}\n`);
 }
 
-function detectFailureCategory(text) {
-  const normalized = String(text ?? "").toLowerCase();
+/**
+ * Attempt to parse structured error JSON from a single line of text.
+ * Returns { category, retryAfterSeconds, source } if a quota/rate-limit error is
+ * detected in a known structured format, otherwise returns null.
+ *
+ * Handled formats:
+ *   - Claude API:  {"type":"error","error":{"type":"rate_limit_error","message":"..."}}
+ *   - Generic HTTP: {"status":429,...} or {"statusCode":429,...}
+ *   - Codex JSONL: {"type":"error","code":"rate_limit",...}
+ */
+function tryParseStructuredError(text) {
+  const lines = String(text ?? "").split(/\r?\n/u);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("{")) {
+      continue;
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+
+    // Claude API format
+    if (parsed?.type === "error" && parsed?.error?.type === "rate_limit_error") {
+      const retryAfterSeconds = parsed.error?.retry_after ?? parsed.error?.reset_after ?? null;
+      return {
+        category: "quota",
+        retryAfterSeconds: retryAfterSeconds != null ? Number(retryAfterSeconds) : null,
+        source: "structured"
+      };
+    }
+
+    // Generic HTTP status 429
+    const httpStatus = parsed?.status ?? parsed?.statusCode;
+    if (httpStatus === 429) {
+      const retryAfterSeconds = parsed?.retry_after ?? parsed?.retryAfter ?? parsed?.reset_after ?? null;
+      return {
+        category: "quota",
+        retryAfterSeconds: retryAfterSeconds != null ? Number(retryAfterSeconds) : null,
+        source: "structured"
+      };
+    }
+
+    // Codex JSONL error format
+    if (parsed?.type === "error" && typeof parsed?.code === "string" && parsed.code.toLowerCase().includes("rate_limit")) {
+      const retryAfterSeconds = parsed?.retry_after ?? parsed?.reset_after ?? null;
+      return {
+        category: "quota",
+        retryAfterSeconds: retryAfterSeconds != null ? Number(retryAfterSeconds) : null,
+        source: "structured"
+      };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Improved text-based quota detection.
+ * Uses word-boundary matching for keyword terms and restricts "429" to
+ * contexts that look like HTTP status codes (not arbitrary occurrences of the
+ * digit sequence).
+ */
+function detectFailureCategoryFromText(text) {
+  const normalized = String(text ?? "");
   if (!normalized) {
     return null;
   }
 
-  if (
-    normalized.includes("rate limit") ||
-    normalized.includes("quota") ||
-    normalized.includes("usage limit") ||
-    normalized.includes("hit your limit") ||
-    normalized.includes("hit the limit") ||
-    normalized.includes("credit balance") ||
-    normalized.includes("429") ||
-    normalized.includes("too many requests")
-  ) {
-    return "quota";
+  // Word-boundary patterns for quota-related terms (case-insensitive)
+  const quotaPatterns = [
+    /\brate[- ]limit(ed)?\b/iu,
+    /\bquota\b/iu,
+    /\busage[- ]limit\b/iu,
+    /\bhit (your|the) limit\b/iu,
+    /\bcredit[- ]balance\b/iu,
+    /\btoo[- ]many[- ]requests\b/iu,
+    // "429" only when it appears as an HTTP status code
+    /\b429\b(?=\s*(too many|rate|quota|error|status|response))/iu,
+    /(?:status|code|http)[:\s]+429\b/iu,
+    /"status"\s*:\s*429\b/iu
+  ];
+
+  for (const pattern of quotaPatterns) {
+    if (pattern.test(normalized)) {
+      return { category: "quota", retryAfterSeconds: null, source: "text" };
+    }
   }
 
   return null;
+}
+
+/**
+ * Detect whether the given text signals a quota/rate-limit failure.
+ * Tries structured JSON parsing first; falls back to text heuristics.
+ *
+ * Returns: { category: "quota"|null, retryAfterSeconds: number|null, source: "structured"|"text" }
+ * or null when no failure category is detected.
+ */
+function detectFailureCategory(text) {
+  if (!String(text ?? "").trim()) {
+    return null;
+  }
+
+  const structured = tryParseStructuredError(text);
+  if (structured) {
+    return structured;
+  }
+
+  return detectFailureCategoryFromText(text);
 }
 
 function isMissingSessionError(text) {
@@ -506,20 +614,36 @@ async function invokeRunner({ prompt, model, config, state, taskId, allowResumeF
   let resolvedSessionId = state.sessionId || sessionId;
   let lastOutputAt = Date.now();
   let spawnError = null;
-  let failureCategory = null;
+  /** @type {{ category: string|null, retryAfterSeconds: number|null, source: string }|null} */
+  let failureDetection = null;
   let failureHint = "";
   let missingSessionDetected = false;
+  let timedOut = false;
   const heartbeat = setInterval(() => {
     const idleSeconds = Math.floor((Date.now() - lastOutputAt) / 1000);
     console.log(`[working] AI is still processing... idle ${idleSeconds}s`);
   }, Math.max(5, config.loop.heartbeatSeconds ?? 10) * 1000);
 
+  const taskTimeoutSeconds = config.loop.taskTimeoutSeconds ?? 1800;
+  let sigkillTimer = null;
+  const timeoutHandle = setTimeout(() => {
+    timedOut = true;
+    console.error(`[timeout] Task exceeded ${taskTimeoutSeconds}s limit. Sending SIGTERM to child process.`);
+    child.kill("SIGTERM");
+    sigkillTimer = setTimeout(() => {
+      if (!child.killed) {
+        console.error("[timeout] Child did not exit after SIGTERM. Sending SIGKILL.");
+        child.kill("SIGKILL");
+      }
+    }, 5000);
+  }, taskTimeoutSeconds * 1000);
+
   const outputReader = createInterface({ input: child.stdout, crlfDelay: Infinity });
   outputReader.on("line", (line) => {
     lastOutputAt = Date.now();
     logStream.write(`${line}\n`);
-    failureCategory = failureCategory || detectFailureCategory(line);
-    if (!failureHint && failureCategory) {
+    failureDetection = failureDetection || detectFailureCategory(line);
+    if (!failureHint && failureDetection) {
       failureHint = line.trim();
     }
     if (isMissingSessionError(line)) {
@@ -539,8 +663,8 @@ async function invokeRunner({ prompt, model, config, state, taskId, allowResumeF
   child.stderr.on("data", (chunk) => {
     const text = chunk.toString("utf8");
     logStream.write(text);
-    failureCategory = failureCategory || detectFailureCategory(text);
-    if (!failureHint && failureCategory) {
+    failureDetection = failureDetection || detectFailureCategory(text);
+    if (!failureHint && failureDetection) {
       failureHint = text.trim();
     }
     if (isMissingSessionError(text)) {
@@ -558,8 +682,8 @@ async function invokeRunner({ prompt, model, config, state, taskId, allowResumeF
     spawnError = error;
     const text = String(error.message ?? error);
     logStream.write(`${text}\n`);
-    failureCategory = failureCategory || detectFailureCategory(text);
-    if (!failureHint && failureCategory) {
+    failureDetection = failureDetection || detectFailureCategory(text);
+    if (!failureHint && failureDetection) {
       failureHint = text.trim();
     }
     if (isMissingSessionError(text)) {
@@ -577,9 +701,22 @@ async function invokeRunner({ prompt, model, config, state, taskId, allowResumeF
     });
   });
 
+  clearTimeout(timeoutHandle);
+  if (sigkillTimer) {
+    clearTimeout(sigkillTimer);
+  }
   clearInterval(heartbeat);
   logStream.end();
   outputStream.end();
+
+  if (timedOut) {
+    return {
+      exitCode,
+      sessionId: resolvedSessionId,
+      failureCategory: "timeout",
+      failureHint: `Task execution timed out after ${taskTimeoutSeconds}s`
+    };
+  }
 
   if (missingSessionDetected && shouldResume && allowResumeFallback) {
     console.log("Saved AI session was not found. Starting a fresh session instead.");
@@ -599,7 +736,8 @@ async function invokeRunner({ prompt, model, config, state, taskId, allowResumeF
   return {
     exitCode,
     sessionId: resolvedSessionId,
-    failureCategory,
+    failureCategory: failureDetection?.category ?? null,
+    retryAfterSeconds: failureDetection?.retryAfterSeconds ?? null,
     failureHint
   };
 }
@@ -638,6 +776,8 @@ async function main() {
     process.exit(130);
   });
 
+  const taskRetryMap = new Map();
+
   while (true) {
     if (pathExists(".autopilot/.stop")) {
       saveState({ ...loadState(), status: "stopped" });
@@ -671,6 +811,50 @@ async function main() {
       state: loadState(),
       taskId: task?.id ?? null
     });
+
+    if (result.failureCategory === "timeout") {
+      const taskId = task?.id ?? null;
+      const maxTaskRetries = config.loop.maxTaskRetries ?? 2;
+      const currentTaskRetries = taskId ? (taskRetryMap.get(taskId) ?? 0) : maxTaskRetries;
+      const nextTaskRetries = currentTaskRetries + 1;
+
+      saveState({
+        ...loadState(),
+        status: "waiting_retry",
+        sessionId: result.sessionId,
+        lastExitCode: result.exitCode,
+        lastFailureCategory: result.failureCategory,
+        lastFailureHint: result.failureHint ?? ""
+      });
+
+      if (taskId && nextTaskRetries <= maxTaskRetries) {
+        taskRetryMap.set(taskId, nextTaskRetries);
+        console.log(
+          `Task ${taskId} timed out (attempt ${nextTaskRetries}/${maxTaskRetries}). Re-queuing for retry.`
+        );
+      } else {
+        if (taskId) {
+          taskRetryMap.set(taskId, nextTaskRetries);
+        }
+        console.error(
+          `Task ${taskId ?? "(idle)"} timed out and exceeded max task retries (${maxTaskRetries}). Marking as failed and moving on.`
+        );
+        appendFileSync(
+          ".autopilot/logs/autopilot.log",
+          `[timeout-skip] task=${taskId ?? "idle"} retries=${nextTaskRetries} hint=${result.failureHint ?? ""}\n`,
+          "utf8"
+        );
+        if (runOnce) {
+          break;
+        }
+        continue;
+      }
+
+      if (runOnce) {
+        break;
+      }
+      continue;
+    }
 
     const previousRetryCount = loadState().retryCount ?? 0;
     const nextRetryCount = result.exitCode === 0
@@ -737,7 +921,8 @@ async function main() {
     const shouldContinue = result.failureCategory === "quota"
       ? await waitForRetry({
           fallbackMinutes: config.loop.waitMinutes ?? 30,
-          failureHint: result.failureHint
+          failureHint: result.failureHint,
+          retryAfterSeconds: result.retryAfterSeconds ?? null
         })
       : await waitWithCountdown(config.loop.waitMinutes ?? 30);
     if (!shouldContinue) {
