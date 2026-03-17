@@ -9,11 +9,12 @@ function runAndExitOnFailure(command, args) {
 
 async function main() {
   const choices = [
-    "Talk to AI and define the project",
+    "New project — talk to AI and define a new project",
+    "Continue working — resume 24/7 autopilot on this project",
+    "Adopt existing project — add AI planning layer to an existing codebase",
     "Manual setup wizard",
     "Configure AI runtime",
     "Check project status",
-    "Start 24/7 AI autopilot",
     "Show autopilot status",
     "Stop autopilot",
     "Exit"
@@ -28,23 +29,26 @@ async function main() {
       runAndExitOnFailure("node", ["infra/scripts/project-intake.mjs"]);
       break;
     case 1:
-      runAndExitOnFailure("node", ["infra/scripts/init-project.mjs"]);
-      break;
-    case 2:
-      runAndExitOnFailure("node", ["infra/scripts/autopilot-configure.mjs"]);
-      break;
-    case 3:
-      runAndExitOnFailure("pnpm", ["health"]);
-      runAndExitOnFailure("pnpm", ["plan:status"]);
-      break;
-    case 4:
       runAndExitOnFailure("pnpm", ["autopilot:doctor"]);
       runAndExitOnFailure("node", ["infra/scripts/autopilot-start.mjs"]);
       break;
+    case 2:
+      runAndExitOnFailure("node", ["infra/scripts/adopt-project.mjs"]);
+      break;
+    case 3:
+      runAndExitOnFailure("node", ["infra/scripts/init-project.mjs"]);
+      break;
+    case 4:
+      runAndExitOnFailure("node", ["infra/scripts/autopilot-configure.mjs"]);
+      break;
     case 5:
-      runAndExitOnFailure("node", ["infra/scripts/autopilot-status.mjs"]);
+      runAndExitOnFailure("pnpm", ["health"]);
+      runAndExitOnFailure("pnpm", ["plan:status"]);
       break;
     case 6:
+      runAndExitOnFailure("node", ["infra/scripts/autopilot-status.mjs"]);
+      break;
+    case 7:
       runAndExitOnFailure("node", ["infra/scripts/autopilot-stop.mjs"]);
       break;
     default:
