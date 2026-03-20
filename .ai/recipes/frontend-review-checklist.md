@@ -73,6 +73,10 @@
   - Use a real route if the page exists.
   - Use `mailto:` for contact links.
   - Use `button` with `disabled` + a tooltip ("Coming soon") if the destination doesn't exist yet.
+- [ ] **Legal pages** (required when payment integration is enabled):
+  - `/privacy` — Privacy Policy page must exist and explain data collection, usage, and deletion rights.
+  - `/terms` — Terms of Service page must exist and cover usage rules, refund policy, liability.
+  - Footer must include visible links to both pages. Missing legal links will cause payment provider rejection.
 - [ ] Cross-promotion ads for sibling products:
   - **Live products**: active card style, clickable link.
   - **"Coming soon" products**: muted/disabled card style, no link or a non-navigating click.
@@ -125,6 +129,7 @@ Use this condensed checklist for a final pass:
 6. Check pricing math with a calculator.
 7. Grep for token key inconsistencies.
 8. Register a new account — does the flow handle password errors gracefully?
+9. If payment is enabled — do `/privacy` and `/terms` pages exist and link from footer?
 
 ---
 

@@ -33,6 +33,17 @@
 - [ ] Create products matching your pricing tiers (e.g., monthly, yearly, or whatever structure your project uses).
 - [ ] Note the **product IDs** for each — you will need them as environment variables.
 
+### Compliance Requirements (MUST have before requesting review)
+
+Payment providers will **reject your application** if these are missing:
+
+- [ ] **Privacy Policy** page (`/privacy`) — must explain what data you collect, how you use it, and how users can request deletion.
+- [ ] **Terms of Service** page (`/terms`) — must cover usage rules, refund policy, limitation of liability.
+- [ ] **Working customer support email** — must be a real email that receives mail (e.g., `support@yourdomain.com`). A non-functional or fake email is grounds for rejection.
+- [ ] **Accurate business information** — product name, description, and website URL in the provider dashboard must match what's actually on the site. False or placeholder info will be flagged.
+
+These pages should be generated as part of the initial frontend build, not added as an afterthought. AI agents MUST create `/privacy` and `/terms` routes when payment integration is enabled.
+
 ### API Credentials
 
 - [ ] Generate an **API key** (start in test mode — switch to live when ready).

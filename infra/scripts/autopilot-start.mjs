@@ -516,6 +516,8 @@ function buildPrompt(readyTasks, config) {
       "- Auth guard required: checkout must verify authentication before proceeding",
       "- Webhook must verify signature against raw body and implement idempotency",
       "- Frontend must show login modal if user clicks checkout while unauthenticated",
+      "- MUST generate /privacy and /terms pages — payment providers reject apps without them",
+      "- MUST include a working support email in the footer — providers verify this",
       ""
     );
   }
