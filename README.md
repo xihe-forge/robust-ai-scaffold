@@ -73,10 +73,27 @@ pnpm kickoff
 ```
 
 The intake flow will:
+- Choose your configuration mode (one-click / standard / advanced)
 - Ask you to describe your project idea
 - Generate structured planning files and task queue
-- Configure your AI runtime (Claude Code, Codex CLI, or custom)
-- Optionally start the autopilot immediately
+- Configure review strategy and AI runtime (standard/advanced modes)
+- Auto-verify and start autopilot (one-click mode) or confirm manually
+
+### Configuration Modes
+
+| Mode | Who it's for | What it asks |
+|------|-------------|-------------|
+| **One-click** | Get started fast | Project description + clarification only. Auto-starts autopilot |
+| **Standard** | Most users | + Review strategy + AI runtime selection |
+| **Advanced** | Power users | + Parallelization, TDD, code review toggles, bug threshold |
+
+### Review Strategies
+
+| Strategy | Behavior |
+|----------|----------|
+| **Auto** (default) | Review rounds scale with project complexity (5–12) |
+| **Zero-bug** | Keep reviewing until remaining bugs < threshold (default: 3) |
+| **Custom** | User specifies exact number of review rounds |
 
 ### Adopt Existing Project
 
@@ -111,6 +128,143 @@ pnpm autopilot:status    # Show autopilot status
 pnpm autopilot:configure # Change AI runtime
 pnpm autopilot:stop      # Stop the autopilot
 ```
+
+## Stage-Based Review Gates
+
+The scaffold enforces mandatory reviews at each development stage, powered by specialized opensource tools:
+
+```
+MRD/PRD Created ──► review-mrd-prd.md ──────► pm-skills, superpowers
+                         │ BLOCKING
+                         ▼
+Tech/Design Docs ──► review-tech-design.md ──► impeccable, ui-ux-pro-max-skill, open-lovable
+                         │ BLOCKING
+                         ▼
+Code Implementation► review-code.md ─────────► superpowers, impeccable
+                         │ BLOCKING
+                         ▼
+Testing Complete ──► review-test-coverage.md ► superpowers, pm-skills (100% PRD coverage)
+                         │ BLOCKING
+                         ▼
+Marketing ─────────► review-marketing.md ────► marketingskills, pm-skills
+                         │ Advisory
+                         ▼
+                      ✅ Phase Complete
+```
+
+**Key rule**: Tests must cover the **entire PRD** — every requirement needs at least one test. The test coverage review builds a PRD-to-test matrix and blocks on any gaps.
+
+Configure gates in `.planning/config.json` under `review_gates`. Each gate specifies triggers (file paths), tools, and whether it's blocking.
+
+## Final Iteration Review (Multi-AI Convergence)
+
+When all tasks complete, the autopilot doesn't just stop — it enters a **final review loop** where multiple AI models audit the entire deliverable in parallel:
+
+```
+All tasks done
+    │
+    ▼
+┌──────────────────────────────────────┐
+│ Opus dispatches parallel reviewers:  │
+│                                      │
+│  Docs: Opus + Codex CLI (parallel)   │
+│  Code: Sonnet + Codex CLI (parallel) │
+│                                      │
+│         ▼                            │
+│  Opus collects & triages findings    │
+│  (dedup, classify, filter)           │
+│         │                            │
+│    ┌────┴────┐                       │
+│    │         │                       │
+│ No issues  Has bugs                  │
+│    │         │                       │
+│    ▼         ▼                       │
+│ CONVERGED  Fix via Sonnet/Codex      │
+│            → next review round       │
+└──────────────────────────────────────┘
+```
+
+Each reviewer operates independently using the review recipes and opensource tools. The main agent (Opus) acts as triage — only real bugs get fixed, false positives are skipped. The loop continues until issues converge to zero or max rounds are reached.
+
+**Dynamic max rounds**: By default (`"auto"`), the round limit scales with project complexity — 3 for small projects, up to 10 for XL (>60 tasks or >100 source files). Override with a specific number in `.planning/config.json`.
+
+## Autopilot State Machine
+
+The autopilot loop manages execution state through a finite state machine:
+
+```
+                    ┌──────────────────────────┐
+                    │                          │
+                    ▼                          │
+              ┌──────────┐    exit=0     ┌────┴─────┐
+  start ─────►│  idle    ├─────────────◄─┤ running  │
+              └────┬─────┘               └──┬───┬───┘
+                   │                        │   │
+                   │ pick task              │   │ quota detected
+                   ▼                        │   ▼
+              ┌──────────┐                  │ ┌──────────────┐
+              │ running  │                  │ │waiting_quota │
+              └──────────┘                  │ │ (smart wait) │
+                                            │ └──────┬───────┘
+                          non-quota error    │        │ timer expires
+                                ┌───────────┘        │
+                                ▼                     │
+                          ┌──────────────┐            │
+                          │waiting_retry │            │
+                          │ (dumb wait)  │            │
+                          └──────┬───────┘            │
+                                 │                    │
+                                 └────────┬───────────┘
+                                          │
+                                          ▼
+                                    ┌──────────┐
+                                    │ running  │ (retry)
+                                    └──────────┘
+
+When all tasks done:
+
+              ┌──────────────┐
+ all done ──► │ final_review │◄──── has fix tasks
+              │ (round N)    │         │
+              └──────┬───────┘         │
+                     │                 │
+              ┌──────┴───────┐         │
+              │              │         │
+          no issues    found bugs ─────┘
+              │        (fix → re-review)
+              ▼
+        ┌─────────────────┐
+        │final_review_done│
+        └─────────────────┘
+
+Max rounds reached with unresolved issues:
+
+        ┌──────────────┐
+        │ final_review  │
+        │ (max reached) │
+        └──────┬───────┘
+               │ has unresolved
+               ▼
+  ┌──────────────────────────┐
+  │ awaiting_user_decision   │
+  │ (autopilot paused)       │
+  └─────┬──────────┬─────────┘
+        │          │
+  --continue    --accept
+   -review      -as-is
+        │          │
+        ▼          ▼
+  ┌──────────┐ ┌─────────────────┐
+  │ resume   │ │final_review_done│
+  │ review   │ └─────────────────┘
+  └──────────┘
+```
+
+**Key distinctions**:
+- `waiting_quota` does not consume the retry budget — rate limits are expected, not errors
+- `final_review` dispatches multiple AI models in parallel for cross-validation
+- The review loop converges when zero new issues or max rounds reached
+- `awaiting_user_decision` ensures humans have final say when issues persist after max rounds
 
 ## How It Compares
 

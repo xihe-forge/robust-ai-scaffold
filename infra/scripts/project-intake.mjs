@@ -18,6 +18,8 @@ import {
   formatDuration,
   pathExists,
   parseQuotaResetWaitSeconds,
+  promptChoice,
+  promptNumber,
   promptText,
   promptYesNo,
   readJson,
@@ -827,21 +829,71 @@ async function main() {
       console.log("");
     }
 
+    // --- Configuration Profile Selection ---
     console.log("");
-    console.log(`Current AI runtime: ${renderRunnerSummary(currentConfig)}`);
-    const keepCurrent = await promptYesNoValue({
-      rl,
-      scriptedInput,
-      key: "useCurrentRuntime",
-      label: "Use this runtime for project intake and 7x24 work",
-      defaultValue: true
-    });
-    const configured = keepCurrent
-      ? currentConfig
-      : await (async () => {
-          console.log("");
-          return configureAutopilotWithReadline(rl, currentConfig);
-        })();
+    let userProfile;
+    if (scriptedInput?.userProfile !== undefined) {
+      userProfile = scriptedInput.userProfile;
+      logScriptedAnswer("Configuration mode", userProfile);
+    } else {
+      const profileIndex = await promptChoice(rl, "Configuration mode:", [
+        "One-click (recommended) — smart defaults, just describe your project",
+        "Standard — choose review strategy and AI runtime",
+        "Advanced — full control over all parameters"
+      ], 0);
+      userProfile = ["one_click", "standard", "advanced"][profileIndex];
+    }
+
+    // --- Review Strategy (standard & advanced only) ---
+    let reviewStrategy = { mode: "auto", custom_rounds: null, zero_bug_threshold: 3 };
+    if (userProfile !== "one_click") {
+      if (scriptedInput?.reviewStrategy !== undefined) {
+        reviewStrategy = scriptedInput.reviewStrategy;
+        logScriptedAnswer("Review strategy", reviewStrategy.mode);
+      } else {
+        console.log("");
+        const strategyIndex = await promptChoice(rl, "Review strategy:", [
+          "Auto (default) — review rounds scale with project complexity (5-12)",
+          "Zero-bug — keep reviewing until bugs < 3",
+          "Custom — specify exact number of review rounds"
+        ], 0);
+
+        if (strategyIndex === 1) {
+          reviewStrategy = { mode: "zero_bug", custom_rounds: null, zero_bug_threshold: 3 };
+          if (userProfile === "advanced") {
+            const threshold = await promptNumber(rl, "Bug threshold (stop when bugs below this number)", 3);
+            reviewStrategy.zero_bug_threshold = threshold;
+          }
+        } else if (strategyIndex === 2) {
+          const rounds = await promptNumber(rl, "Number of review rounds", 8);
+          reviewStrategy = { mode: "custom", custom_rounds: rounds, zero_bug_threshold: 3 };
+        }
+      }
+    }
+
+    // --- AI Runtime (standard & advanced only, one_click uses current) ---
+    let configured;
+    if (userProfile === "one_click") {
+      configured = currentConfig;
+      console.log("");
+      console.log(`AI runtime: ${renderRunnerSummary(configured)} (using default)`);
+    } else {
+      console.log("");
+      console.log(`Current AI runtime: ${renderRunnerSummary(currentConfig)}`);
+      const keepCurrent = await promptYesNoValue({
+        rl,
+        scriptedInput,
+        key: "useCurrentRuntime",
+        label: "Use this runtime for project intake and 7x24 work",
+        defaultValue: true
+      });
+      configured = keepCurrent
+        ? currentConfig
+        : await (async () => {
+            console.log("");
+            return configureAutopilotWithReadline(rl, currentConfig);
+          })();
+    }
 
     saveAutopilotConfig(configured);
 
@@ -883,36 +935,97 @@ async function main() {
       console.log("[resume] Planning files were already written in a previous kickoff run.");
     }
 
-    let shouldVerify = state.nextAction.shouldVerify;
-    if (shouldVerify === null) {
-      shouldVerify = await promptYesNoValue({
-        rl,
-        scriptedInput,
-        key: "verifyAfterSetup",
-        label: "Run install, health, doctor, and build now",
-        defaultValue: true
-      });
-      state = intakeStateStore.patch({
-        nextAction: {
-          shouldVerify
-        }
-      });
+    // --- Optional modules (standard & advanced) ---
+    let paymentEnabled = false;
+    if (userProfile !== "one_click") {
+      if (scriptedInput?.enablePayment !== undefined) {
+        paymentEnabled = Boolean(scriptedInput.enablePayment);
+        logScriptedAnswer("Enable payment/subscription", paymentEnabled);
+      } else {
+        paymentEnabled = await promptYesNo(rl, "Does this project need payment/subscription (Creem + Wise)", false);
+      }
+
+      if (paymentEnabled) {
+        console.log("");
+        console.log("Payment module enabled. Setup guide: .ai/recipes/payment-integration-guide.md");
+        console.log("You will need to:");
+        console.log("  1. Register at creem.io and complete KYC");
+        console.log("  2. Create products (monthly/yearly plans)");
+        console.log("  3. Set up Wise for payouts (non-US developers)");
+        console.log("  4. Add API keys to .env when ready");
+        console.log("");
+        console.log("The scaffold will generate all integration code once you provide the keys.");
+      }
     }
 
+    // --- Write review strategy, user profile, and modules to planning config ---
+    const planConfig = readJson(".planning/config.json", {});
+    planConfig.user_profile = userProfile;
+    planConfig.review_strategy = reviewStrategy;
+    if (!planConfig.optional_modules) planConfig.optional_modules = {};
+    planConfig.optional_modules.payment = {
+      enabled: paymentEnabled,
+      provider: "creem",
+      recipe: ".ai/recipes/payment-integration-guide.md",
+      payout_method: "wise"
+    };
+    writeJson(".planning/config.json", planConfig);
+
+    let shouldVerify = state.nextAction.shouldVerify;
     let shouldStartWork = state.nextAction.shouldStartWork;
-    if (shouldStartWork === null) {
-      shouldStartWork = await promptYesNoValue({
-        rl,
-        scriptedInput,
-        key: "startAutopilot",
-        label: "Start 7x24 autopilot after verification",
-        defaultValue: false
-      });
-      state = intakeStateStore.patch({
-        nextAction: {
-          shouldStartWork
-        }
-      });
+
+    if (userProfile === "one_click") {
+      // One-click mode: auto verify + auto start
+      if (shouldVerify === null) {
+        shouldVerify = true;
+        state = intakeStateStore.patch({ nextAction: { shouldVerify } });
+      }
+      if (shouldStartWork === null) {
+        shouldStartWork = true;
+        state = intakeStateStore.patch({ nextAction: { shouldStartWork } });
+      }
+      console.log("");
+      console.log("One-click mode: auto-verify and auto-start autopilot.");
+    } else {
+      if (shouldVerify === null) {
+        shouldVerify = await promptYesNoValue({
+          rl,
+          scriptedInput,
+          key: "verifyAfterSetup",
+          label: "Run install, health, doctor, and build now",
+          defaultValue: true
+        });
+        state = intakeStateStore.patch({
+          nextAction: { shouldVerify }
+        });
+      }
+
+      if (shouldStartWork === null) {
+        shouldStartWork = await promptYesNoValue({
+          rl,
+          scriptedInput,
+          key: "startAutopilot",
+          label: "Start 7x24 autopilot after verification",
+          defaultValue: false
+        });
+        state = intakeStateStore.patch({
+          nextAction: { shouldStartWork }
+        });
+      }
+    }
+
+    // --- Advanced: additional config options ---
+    if (userProfile === "advanced") {
+      console.log("");
+      console.log("Advanced configuration:");
+
+      const maxConcurrent = await promptNumber(rl, "Max concurrent agents", planConfig.parallelization?.max_concurrent_agents ?? 3);
+      const tddDefault = await promptYesNo(rl, "Require TDD (test-driven development)", planConfig.discipline?.tdd_default ?? true);
+      const codeReviewRequired = await promptYesNo(rl, "Require code review before merge", planConfig.discipline?.code_review_required ?? true);
+
+      planConfig.parallelization = { ...planConfig.parallelization, max_concurrent_agents: maxConcurrent };
+      planConfig.discipline = { ...planConfig.discipline, tdd_default: tddDefault, code_review_required: codeReviewRequired };
+      writeJson(".planning/config.json", planConfig);
     }
 
     return {

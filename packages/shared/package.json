@@ -18,7 +18,7 @@
     "build": "tsc -p tsconfig.json",
     "dev": "tsc -p tsconfig.json --watch --preserveWatchOutput",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "lint": "node -e \"console.log('No lint configured yet for @robust-ai-scaffold/shared')\"",
-    "test": "node -e \"console.log('No tests configured yet for @robust-ai-scaffold/shared')\""
+    "lint": "prettier --check \"src/**/*.{ts,tsx}\"",
+    "test": "echo \"No package-level tests — run pnpm test:unit from root\""
   }
 }

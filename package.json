@@ -5,7 +5,7 @@
   "description": "Resilient monorepo scaffold with durable planning state",
   "packageManager": "pnpm@10.30.3",
   "engines": {
-    "node": ">=24.0.0"
+    "node": ">=20.0.0"
   },
   "scripts": {
     "start-here": "node infra/scripts/start-here.mjs",

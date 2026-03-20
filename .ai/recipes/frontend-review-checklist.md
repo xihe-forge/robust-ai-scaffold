@@ -1,16 +1,19 @@
 # Frontend Review Checklist
 
-> Derived from real issues found during SubtextAI development.
+> Practical checklist derived from real production bugs.
 > Use this as a pre-launch and PR review reference for any frontend built on this scaffold.
 
 ---
 
 ## 1. Layout Consistency
 
-- [ ] All page sections use the **same max-width** container (e.g., `max-w-5xl`). Mixed widths cause subtle misalignment that is easy to miss in code but obvious when scrolling.
-- [ ] Card content is **centered by default**. Only left-align when there is a structural reason (e.g., a feature bullet list that reads better left-aligned).
-- [ ] **Visually verify** alignment by scrolling through the full page at desktop width. Code-level review alone is not sufficient — a `max-w-4xl` next to a `max-w-5xl` section is hard to catch in a diff but immediately visible in the browser.
-- [ ] Padding and gap values are consistent across sibling sections. Avoid mixing `p-6` and `p-8` between cards in the same row.
+- [ ] All page sections use the **same max-width** container. Mixed widths (e.g., one section at 960px and the next at 1120px) cause subtle misalignment that is easy to miss in code but obvious when scrolling.
+- [ ] Padding and gap values are consistent across sibling sections. Avoid mixing different spacing values between cards in the same row.
+- [ ] **Visually verify** alignment by scrolling through the full page at desktop width. Code-level review alone is not sufficient for catching layout inconsistencies.
+- [ ] Text alignment matches the page type:
+  - **Landing pages / marketing**: centered content is common.
+  - **Dashboards / forms / articles**: left-aligned content is standard.
+  - Don't force one alignment everywhere — match the context.
 
 ---
 
@@ -19,7 +22,7 @@
 ### Navigation labels
 
 - [ ] Nav items must be **short and similar length** across all supported languages. Long translations break horizontal nav layouts.
-- [ ] Add `min-width` and `whitespace-nowrap` (Tailwind: `min-w-fit whitespace-nowrap`) to nav link containers so they never wrap or shrink.
+- [ ] Nav link containers should prevent wrapping or shrinking (e.g., `white-space: nowrap; min-width: fit-content`).
 - [ ] Create **separate translation keys** for nav CTAs vs. body/hero CTAs:
   ```
   navCta: "Try Free"            // short — fits nav bar
@@ -30,7 +33,7 @@
 ### Language toggle
 
 - [ ] Test that the language toggle **actually switches content** end-to-end. Common failures:
-  - `LocaleProvider` not wrapping the entire app (or wrapped inside a component that remounts).
+  - Locale provider not wrapping the entire app (or wrapped inside a component that remounts).
   - Hydration mismatch: server renders one locale, client picks up another from `localStorage`.
   - Missing translation keys that silently fall back to the default language.
 - [ ] After toggling, check that **every** visible string changed — not just the hero section.
@@ -45,14 +48,14 @@
 
 ### Registration form
 
-- [ ] Must include a **password confirmation** field. Single-password registration leads to support requests from users who mistyped their password.
+- [ ] Consider including a **password confirmation** field, OR use email verification as an alternative recovery path. Single-password registration without email verification leads to support requests from users who mistyped their password.
 
 ### Email validation
 
 - [ ] Validate the **full email format** including domain and TLD, not just the presence of `@`.
   - Bad: `user@` passes validation.
   - Good: require `user@domain.tld` pattern at minimum.
-- [ ] Consider a simple regex like `/^[^\s@]+@[^\s@]+\.[^\s@]+$/` rather than overly strict RFC validation that rejects valid edge-case addresses.
+- [ ] Use a simple regex like `/^[^\s@]+@[^\s@]+\.[^\s@]+$/` rather than overly strict RFC validation that rejects valid edge-case addresses.
 
 ### Token storage
 
@@ -71,9 +74,9 @@
   - Use `mailto:` for contact links.
   - Use `button` with `disabled` + a tooltip ("Coming soon") if the destination doesn't exist yet.
 - [ ] Cross-promotion ads for sibling products:
-  - **Live products**: white/active card style, clickable link.
-  - **"Coming soon" products**: gray/muted/disabled card style, no link or a non-navigating click.
-- [ ] "Powered by" footer text should reference the **actual brand name** (e.g., "Powered by SubtextAI"), not a generic label like "Powered by AI."
+  - **Live products**: active card style, clickable link.
+  - **"Coming soon" products**: muted/disabled card style, no link or a non-navigating click.
+- [ ] "Powered by" footer text should reference the **actual product/brand name**, not a generic label like "Powered by AI."
 
 ---
 
@@ -98,15 +101,15 @@
 
 ## 6. Mobile & Responsive
 
-- [ ] Test every section at **mobile breakpoints** (375px, 390px, 414px at minimum). Common failures:
+- [ ] Test every section at the project's **target breakpoints** (check `.planning/config.json` `responsive_breakpoints`; if not configured, use common mobile widths: 375px, 390px, 414px). Common failures:
   - Horizontal overflow from fixed-width elements.
   - Text overlapping buttons or images.
   - Grid layouts that don't collapse to single-column.
 - [ ] If using a **bottom tab bar** (mobile nav), verify:
-  - Page content has enough bottom padding (`pb-20` or equivalent) so the last section is not hidden behind the tab bar.
+  - Page content has enough bottom padding so the last section is not hidden behind the tab bar.
   - The tab bar does not overlap floating action buttons or cookie banners.
 - [ ] Test the **hamburger menu** (if used) opens and closes correctly, and that clicking a nav link closes the menu.
-- [ ] Modals (login, signup) must be **scrollable** on short screens. A 700px-tall modal on a 667px screen (iPhone SE) is unusable if it cannot scroll.
+- [ ] Modals (login, signup) must be **scrollable** on short screens. A tall modal on a short viewport is unusable if it cannot scroll.
 
 ---
 
@@ -114,15 +117,15 @@
 
 Use this condensed checklist for a final pass:
 
-1. Open the app at 1440px and scroll top to bottom — any alignment jumps?
-2. Switch language — did everything change? Any layout shifts?
-3. Open at 375px — any overflow, overlap, or hidden content?
+1. Open the app at desktop width and scroll top to bottom — any alignment jumps?
+2. Switch language (if i18n) — did everything change? Any layout shifts?
+3. Open at a mobile breakpoint — any overflow, overlap, or hidden content?
 4. Click every link in the footer — any `#` hrefs or dead links?
 5. Try checkout without logging in — does it prompt login?
 6. Check pricing math with a calculator.
 7. Grep for token key inconsistencies.
-8. Register a new account — is there a confirm-password field?
+8. Register a new account — does the flow handle password errors gracefully?
 
 ---
 
-*Last updated: 2026-03-20 | Source: SubtextAI development retrospective*
+*Last updated: 2026-03-20 | Source: production bug retrospective*

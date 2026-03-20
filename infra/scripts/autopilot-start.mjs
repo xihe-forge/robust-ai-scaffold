@@ -1,8 +1,9 @@
 import { appendFileSync, createWriteStream, rmSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { randomUUID } from "node:crypto";
-import { spawn } from "node:child_process";
+import { spawn, execSync } from "node:child_process";
 import process from "node:process";
+import path from "node:path";
 import {
   buildShellCommandLine,
   ensureDir,
@@ -13,6 +14,7 @@ import {
   readJson,
   readText,
   requiresCommandShell,
+  rootDir,
   sleep,
   writeJson
 } from "./lib/utils.mjs";
@@ -28,6 +30,8 @@ import {
 const args = process.argv.slice(2);
 const isDryRun = args.includes("--dry-run");
 const runOnce = args.includes("--once");
+const continueReview = args.includes("--continue-review");
+const acceptAsIs = args.includes("--accept-as-is");
 
 function loadConfig() {
   ensureDir(".autopilot");
@@ -62,11 +66,13 @@ function clearStopSignal() {
   }
 }
 
+/** Load and filter valid tasks from dev/task.json. */
 function getTasks() {
   const raw = readJson("dev/task.json", { tasks: [] }).tasks ?? [];
   return raw.filter((task) => task && task.id);
 }
 
+/** Find the highest-priority todo task whose dependencies are all satisfied. */
 function getNextTask() {
   const tasks = getTasks();
 
@@ -91,6 +97,11 @@ function getNextTask() {
   return null;
 }
 
+/**
+ * Detect circular dependencies in the task graph using DFS graph coloring.
+ * @param {Array<{id: string, depends_on?: string[]}>} tasks
+ * @returns {string[][]} Array of cycles, each cycle is an array of task IDs
+ */
 export function detectCycles(tasks) {
   const WHITE = 0;
   const GRAY = 1;
@@ -136,6 +147,10 @@ export function detectCycles(tasks) {
   return cycles;
 }
 
+/**
+ * Get all todo tasks whose dependencies are satisfied and are not in cycles.
+ * Tasks are returned in priority order (P0 → P1 → P2).
+ */
 function getReadyTasks() {
   const tasks = getTasks();
   const ready = [];
@@ -190,21 +205,296 @@ function getTaskProgressSummary() {
   };
 }
 
+/**
+ * Compute the max review rounds dynamically based on project complexity and review strategy.
+ *
+ * Review strategies (from .planning/config.json review_strategy.mode):
+ *   "auto"     — scale by project complexity (default)
+ *   "zero_bug" — review until bugs < threshold (uses a high cap, convergence checked separately)
+ *   "custom"   — user-specified fixed number
+ *
+ * Auto tiers:
+ *   Small  (≤10 tasks, ≤20 files)  → 5 rounds
+ *   Medium (≤30 tasks, ≤50 files)  → 7 rounds
+ *   Large  (≤60 tasks, ≤100 files) → 10 rounds
+ *   XL     (>60 tasks or >100 files) → 12 rounds
+ *
+ * @param {object} opts
+ * @param {number} opts.taskCount - Total number of tasks in dev/task.json
+ * @param {number} opts.sourceFileCount - Number of source files in apps/ + packages/
+ * @param {number|string|undefined} opts.configMaxRounds - Value from final_review config (number, "auto", or undefined)
+ * @param {object} [opts.reviewStrategy] - Review strategy from .planning/config.json
+ * @param {string} [opts.reviewStrategy.mode] - "auto" | "zero_bug" | "custom"
+ * @param {number} [opts.reviewStrategy.custom_rounds] - Fixed round count for "custom" mode
+ * @returns {number} The computed max review rounds
+ */
+function computeMaxReviewRounds({ taskCount = 0, sourceFileCount = 0, configMaxRounds, reviewStrategy } = {}) {
+  // Review strategy takes priority
+  if (reviewStrategy?.mode === "zero_bug") {
+    // High cap — actual convergence is checked by bug count in the main loop
+    return 50;
+  }
+
+  if (reviewStrategy?.mode === "custom" && typeof reviewStrategy.custom_rounds === "number" && reviewStrategy.custom_rounds > 0) {
+    return reviewStrategy.custom_rounds;
+  }
+
+  // Explicit numeric override from final_review config
+  if (typeof configMaxRounds === "number" && configMaxRounds > 0) {
+    return configMaxRounds;
+  }
+
+  // Auto-scale based on complexity
+  const tc = taskCount;
+  const fc = sourceFileCount;
+
+  if (tc > 60 || fc > 100) return 12;
+  if (tc > 30 || fc > 50)  return 10;
+  if (tc > 10 || fc > 20)  return 7;
+  return 5;
+}
+
+/**
+ * Count source files in apps/ and packages/ directories.
+ * Falls back to 0 if directories don't exist.
+ * @returns {number}
+ */
+function countSourceFiles() {
+  try {
+    const output = execSync(
+      'find apps packages -type f \\( -name "*.ts" -o -name "*.tsx" -o -name "*.js" -o -name "*.jsx" -o -name "*.mjs" -o -name "*.vue" -o -name "*.svelte" \\) 2>/dev/null | wc -l',
+      { encoding: "utf-8", cwd: rootDir }
+    ).trim();
+    return parseInt(output, 10) || 0;
+  } catch {
+    return 0;
+  }
+}
+
 function resolveModel(task, config) {
   return config.models.planning;
 }
 
+/**
+ * Load review gate configuration and build review instructions for the prompt.
+ * Matches task type and affected files to determine which review recipes apply.
+ * @param {object|null} task - Current task (or null for idle mode)
+ * @returns {string} Review gate instructions to inject into the prompt, or empty string
+ */
+function buildReviewGateInstructions(task) {
+  if (!task) return "";
+
+  const planConfig = readJson(".planning/config.json", {});
+  const reviewGates = planConfig?.review_gates;
+  if (!reviewGates) return "";
+
+  const taskType = task.type ?? "";
+  const taskName = (task.name ?? "").toLowerCase();
+  const taskDesc = (task.description ?? "").toLowerCase();
+
+  const applicableGates = [];
+
+  // Match gates by task type and content
+  if (reviewGates.mrd_prd_review?.enabled) {
+    if (taskType === "research" || taskType === "planning" ||
+        taskName.includes("mrd") || taskName.includes("prd") ||
+        taskName.includes("requirement") || taskDesc.includes("market research") ||
+        taskDesc.includes("product requirement")) {
+      applicableGates.push({
+        name: "MRD/PRD Review",
+        recipe: reviewGates.mrd_prd_review.recipe,
+        tools: reviewGates.mrd_prd_review.tools,
+        blocking: reviewGates.mrd_prd_review.blocking
+      });
+    }
+  }
+
+  if (reviewGates.tech_design_review?.enabled) {
+    if (taskType === "docs" ||
+        taskName.includes("tech spec") || taskName.includes("design") ||
+        taskName.includes("architecture") || taskDesc.includes("technical spec") ||
+        taskDesc.includes("design doc")) {
+      applicableGates.push({
+        name: "Tech/Design Review",
+        recipe: reviewGates.tech_design_review.recipe,
+        tools: reviewGates.tech_design_review.tools,
+        blocking: reviewGates.tech_design_review.blocking
+      });
+    }
+  }
+
+  if (reviewGates.code_review?.enabled) {
+    if (taskType === "implementation" || taskType === "review") {
+      applicableGates.push({
+        name: "Code Review",
+        recipe: reviewGates.code_review.recipe,
+        tools: reviewGates.code_review.tools,
+        blocking: reviewGates.code_review.blocking
+      });
+    }
+  }
+
+  if (reviewGates.test_coverage_review?.enabled) {
+    if (taskType === "testing" ||
+        taskName.includes("test") || taskDesc.includes("test coverage")) {
+      applicableGates.push({
+        name: "Test Coverage Review",
+        recipe: reviewGates.test_coverage_review.recipe,
+        tools: reviewGates.test_coverage_review.tools,
+        blocking: reviewGates.test_coverage_review.blocking,
+        extra: "IMPORTANT: Build a PRD-to-test coverage matrix. Every PRD requirement MUST have at least one test. 100% coverage required."
+      });
+    }
+  }
+
+  if (reviewGates.marketing_review?.enabled) {
+    if (taskName.includes("marketing") || taskName.includes("gtm") ||
+        taskName.includes("launch") || taskDesc.includes("marketing") ||
+        taskDesc.includes("go-to-market")) {
+      applicableGates.push({
+        name: "Marketing Review",
+        recipe: reviewGates.marketing_review.recipe,
+        tools: reviewGates.marketing_review.tools,
+        blocking: reviewGates.marketing_review.blocking
+      });
+    }
+  }
+
+  if (applicableGates.length === 0) return "";
+
+  const lines = [
+    "",
+    "## Review Gates (MANDATORY)",
+    "The following review gates apply to this task. You MUST complete them before marking the task done.",
+    ""
+  ];
+
+  for (const gate of applicableGates) {
+    const blockLabel = gate.blocking ? "BLOCKING" : "Advisory";
+    lines.push(`### ${gate.name} [${blockLabel}]`);
+    lines.push(`- Recipe: Read and follow \`${gate.recipe}\``);
+    lines.push(`- Tools: ${gate.tools.join(", ")}`);
+    if (gate.extra) {
+      lines.push(`- ${gate.extra}`);
+    }
+    lines.push(`- Record review result in \`dev/review/REVIEW-${gate.name.replace(/[/ ]/g, "-").toUpperCase()}-${task.id}.md\``);
+    lines.push("");
+  }
+
+  lines.push("If any BLOCKING review FAILS: do NOT mark the task as done. Instead, fix the issues and re-review.");
+
+  return lines.join("\n");
+}
+
+/**
+ * Sanitizes a task ID for safe use in file paths, branch names, and shell commands.
+ * Matches the PS-side regex in worktree.ps1.
+ * Appends a short hash suffix when the original ID differs from its sanitized form
+ * to avoid collisions (e.g., "feat/login" vs "feat-login" → different safe IDs).
+ */
+function sanitizeTaskId(id) {
+  const raw = String(id ?? "");
+  // No /u flag — match PS UTF-16 code-unit semantics for astral Unicode parity (#R4-7)
+  const sanitized = raw.replace(/[^a-zA-Z0-9_-]/g, "-");
+  if (sanitized === raw) return sanitized;
+  // Append 4-char hex hash to disambiguate lossy sanitization (same djb2 as PS side)
+  let hash = 0;
+  for (let i = 0; i < raw.length; i++) {
+    hash = ((hash << 5) - hash + raw.charCodeAt(i)) | 0;
+  }
+  const suffix = (hash >>> 0).toString(16).slice(-4).padStart(4, "0");
+  return `${sanitized}-${suffix}`;
+}
+
+/**
+ * Checks whether Codex delegation prerequisites are available.
+ * Returns { available: boolean, issues: string[] }
+ */
+function checkCodexPrerequisites() {
+  const issues = [];
+  const bridgePath = path.join(rootDir, "codex-bridge", "CodexBridge.psm1");
+  if (!pathExists(bridgePath)) {
+    issues.push("codex-bridge/CodexBridge.psm1 not found");
+  }
+  // Check codex CLI availability (not just file existence)
+  try {
+    const result = execSync("codex --version", { timeout: 10000, stdio: "pipe", shell: process.platform === "win32" });
+    if (!result || !result.toString().trim()) {
+      issues.push("codex CLI found but returned empty version");
+    }
+  } catch {
+    issues.push("codex CLI not found or not executable (install with: npm install -g @openai/codex)");
+  }
+  return { available: issues.length === 0, issues };
+}
+
+/**
+ * Builds Codex delegation instructions for the prompt.
+ * When Opus is the main runner but a task is assigned to Codex,
+ * instruct Opus to delegate via the codex-bridge module.
+ *
+ * Uses absolute paths and powershell.exe (not pwsh) for WinPS 5.1 compatibility.
+ */
+function buildCodexDelegationBlock(task) {
+  const rawId = task.id;
+  const safeId = sanitizeTaskId(rawId);
+  // Use absolute paths so commands work regardless of CWD
+  // Escape single quotes for safe embedding in PS -Command strings (#R4-6)
+  const absRoot = rootDir.replace(/\//g, "\\").replace(/'/g, "''");
+  const absHandoff = `${absRoot}\\.task-handoff\\codex-task-${safeId}.md`;
+  const absWorktree = `${absRoot}\\.worktrees\\codex-${safeId}`;
+  const modulePath = `${absRoot}\\codex-bridge\\CodexBridge.psm1`;
+  // Escape single quotes in rawId for safe PS single-quoted string embedding
+  // Escape for PS single-quoted strings: ' → '' and strip newlines (single-line assignment)
+  const escapePs = (s) => (s ?? "").replace(/'/g, "''").replace(/[\r\n]+/g, " ");
+  const escapedRawId = escapePs(rawId);
+  const escapedName = escapePs(task.name);
+  return [
+    `This task is assigned to **Codex (GPT)**. Delegate via the CodexBridge PowerShell module.`,
+    ``,
+    `a. First, analyze the task and identify which source files Codex needs as context.`,
+    `b. Import the module and run the full lifecycle in one call:`,
+    `   \`\`\`powershell`,
+    `   Import-Module '${modulePath}'`,
+    `   $task = @{ id='${escapedRawId}'; name='${escapedName}'; description='${escapePs(task.description)}'; steps=@(${(task.steps ?? []).map(s => `'${escapePs(s)}'`).join(",")}); acceptance_criteria=@(${(task.acceptance_criteria ?? []).map(s => `'${escapePs(s)}'`).join(",")}) }`,
+    `   $result = Invoke-Codex -TaskId '${escapedRawId}' -Task $task -ProjectRoot '${absRoot}'`,
+    `   \`\`\``,
+    `c. Review the result using module functions:`,
+    `   \`\`\`powershell`,
+    `   $review = Get-CodexReviewSummary -Result $result -ProjectRoot '${absRoot}'`,
+    `   Format-ReviewForClaude -Review $review`,
+    `   \`\`\``,
+    `d. Accept or reject:`,
+    `   \`\`\`powershell`,
+    `   Complete-CodexTask -Result $result -Verdict "accept" -ProjectRoot '${absRoot}'  # or "reject"`,
+    `   \`\`\``,
+    ``,
+    `IMPORTANT: Always use the module API above. Do NOT run manual git worktree/merge/branch commands.`,
+    ``
+  ].join("\n");
+}
+
+/**
+ * Build the system prompt for the AI runner based on ready tasks and config.
+ * Handles four modes: multi-task (Opus orchestrator), single-task (Sonnet worker),
+ * codex delegation, and idle (task generation or audit).
+ * @param {Array} readyTasks - Tasks with all dependencies satisfied
+ * @param {object} config - Autopilot configuration
+ * @returns {string} The complete prompt text
+ */
 function buildPrompt(readyTasks, config) {
   const progress = getProgressTail();
   const summary = getTaskProgressSummary();
   const task = readyTasks.length > 0 ? readyTasks[0] : null;
-  const sharedHeader = [
+  const planConfig = readJson(".planning/config.json", {});
+  const sharedHeaderParts = [
     "You are the continuous delivery agent for this repository.",
     "Operate autonomously and do not ask the user questions unless blocked by missing external information.",
     "",
     "## Mandatory Reading (every round)",
     "Read these files before making any changes:",
-    "- AGENTS.md (role division, parallel strategy, quality gates)",
+    "- AGENTS.md (role division, parallel strategy, quality gates, error handling rules)",
+    "- .ai/recipes/error-handling-and-logging.md (error safety and logging standards — MANDATORY)",
     "- .planning/STATE.md (current status)",
     "- .planning/ROADMAP.md (phase sequence)",
     "- dev/task.json (task queue)",
@@ -214,9 +504,30 @@ function buildPrompt(readyTasks, config) {
     "Recent progress:",
     progress || "(no progress logged yet)",
     ""
-  ].join("\n");
+  ];
+
+  // Optional modules instructions
+  if (planConfig?.optional_modules?.payment?.enabled) {
+    sharedHeaderParts.push(
+      "## Enabled Module: Payment Integration",
+      "This project has payment enabled. When implementing payment-related tasks:",
+      "- Read .ai/recipes/payment-integration-guide.md for the full integration pattern",
+      "- Generate checkout, webhook, and portal API routes following the guide",
+      "- Auth guard required: checkout must verify authentication before proceeding",
+      "- Webhook must verify signature against raw body and implement idempotency",
+      "- Frontend must show login modal if user clicks checkout while unauthenticated",
+      ""
+    );
+  }
+
+  const sharedHeader = sharedHeaderParts.join("\n");
 
   if (readyTasks.length > 1) {
+    // Partition tasks by assignee
+    const codexTasks = readyTasks.filter((t) => t.assignee === "codex");
+    const sonnetTasks = readyTasks.filter((t) => t.assignee !== "codex" && t.assignee !== "opus");
+    const opusTasks = readyTasks.filter((t) => t.assignee === "opus");
+
     let taskList = "";
     for (let i = 0; i < readyTasks.length; i++) {
       const t = readyTasks[i];
@@ -227,12 +538,71 @@ function buildPrompt(readyTasks, config) {
         `- Name: ${t.name}`,
         `- Type: ${t.type}`,
         `- Priority: ${t.priority}`,
+        `- Assignee: ${t.assignee ?? "sonnet"}`,
         `- Description: ${t.description}`,
         "Acceptance criteria:",
         criteria || "- (none provided)",
         ""
       ].join("\n");
     }
+
+    const strategyParts = [
+      "## Execution Strategy",
+      "You are the Opus orchestrator. Follow this workflow:",
+      "",
+      "1. Read AGENTS.md and relevant docs for these tasks."
+    ];
+
+    // Codex delegation instructions
+    if (codexTasks.length > 0) {
+      strategyParts.push(
+        "",
+        `### Codex Tasks (${codexTasks.length} tasks)`,
+        "These tasks are assigned to Codex. For each one:"
+      );
+      for (const ct of codexTasks) {
+        strategyParts.push("", `**${ct.id}: ${ct.name}**`, buildCodexDelegationBlock(ct));
+      }
+    }
+
+    // Opus direct tasks
+    if (opusTasks.length > 0) {
+      strategyParts.push(
+        "",
+        `### Opus Tasks (${opusTasks.length} tasks) — complete directly`,
+        "These are planning/review tasks. Complete them yourself without sub-agents."
+      );
+    }
+
+    // Sonnet parallel tasks
+    if (sonnetTasks.length > 0) {
+      strategyParts.push(
+        "",
+        `### Sonnet Tasks (${sonnetTasks.length} tasks)`,
+        `2. Launch one Sonnet sub-Agent per task, all in parallel:`,
+        "   - EVERY Agent MUST use `isolation: 'worktree'` and `model: 'sonnet'`.",
+        "   - Each Agent gets its own git branch and working directory.",
+        "3. After ALL Agents complete:",
+        "   - Review each Agent's changes.",
+        "   - Merge branches sequentially into the current branch.",
+        "   - Resolve conflicts if any."
+      );
+    }
+
+    strategyParts.push(
+      "",
+      `${sonnetTasks.length > 0 ? "4" : "2"}. Run verification on the merged result.`,
+      `${sonnetTasks.length > 0 ? "5" : "3"}. Update dev/task.json — set ALL completed tasks to done.`,
+      `${sonnetTasks.length > 0 ? "6" : "4"}. Update dev/progress.txt with what was accomplished for each task.`,
+      `${sonnetTasks.length > 0 ? "7" : "5"}. Update .planning/STATE.md.`,
+      `${sonnetTasks.length > 0 ? "8" : "6"}. Git commit all final changes together.`
+    );
+
+    // Collect review gates for all ready tasks
+    const batchReviewGates = readyTasks
+      .map((t) => buildReviewGateInstructions(t))
+      .filter(Boolean)
+      .join("\n");
 
     return [
       sharedHeader,
@@ -241,22 +611,8 @@ function buildPrompt(readyTasks, config) {
       "The following tasks are ALL ready to execute. Execute as many in parallel as possible.",
       "",
       taskList,
-      "## Execution Strategy",
-      "You are the Opus orchestrator. Follow this workflow:",
-      "",
-      "1. Read AGENTS.md and relevant docs for these tasks.",
-      "2. Launch one Sonnet sub-Agent per task, all in parallel:",
-      "   - EVERY Agent MUST use `isolation: 'worktree'` and `model: 'sonnet'`.",
-      "   - Each Agent gets its own git branch and working directory.",
-      "3. After ALL Agents complete:",
-      "   - Review each Agent's changes.",
-      "   - Merge branches sequentially into the current branch.",
-      "   - Resolve conflicts if any.",
-      "4. Run verification on the merged result.",
-      "5. Update dev/task.json — set ALL completed tasks to done.",
-      "6. Update dev/progress.txt with what was accomplished for each task.",
-      "7. Update .planning/STATE.md.",
-      "8. Git commit all final changes together.",
+      ...strategyParts,
+      batchReviewGates,
       "",
       "## Deviation Rules",
       "If you encounter unexpected situations during execution, follow AGENTS.md deviation rules:",
@@ -269,18 +625,73 @@ function buildPrompt(readyTasks, config) {
     const criteria = (task.acceptance_criteria ?? []).map((item) => `- ${item}`).join("\n");
     const smallThreshold = config.scaleThresholds?.small ?? 2;
     const mediumThreshold = config.scaleThresholds?.medium ?? 5;
-    return [
+
+    const taskHeader = [
       sharedHeader,
       "## Current Task",
       `- ID: ${task.id}`,
       `- Name: ${task.name}`,
       `- Type: ${task.type}`,
       `- Priority: ${task.priority}`,
+      `- Assignee: ${task.assignee ?? "sonnet"}`,
       `- Description: ${task.description}`,
       "",
       "Acceptance criteria:",
       criteria || "- (none provided)",
-      "",
+      ""
+    ];
+
+    const reviewGateBlock = buildReviewGateInstructions(task);
+
+    // Codex-assigned task: delegate via codex-bridge
+    if (task.assignee === "codex") {
+      return [
+        ...taskHeader,
+        "## Execution Strategy — Codex Delegation",
+        "You are the Opus orchestrator. This task is assigned to Codex.",
+        "",
+        "1. Read AGENTS.md and relevant docs for this task.",
+        `2. ${buildCodexDelegationBlock(task)}`,
+        "3. After reviewing and merging (or rejecting):",
+        "   - Run verification: build, lint, or test as appropriate.",
+        "   - Update dev/task.json (set status to done).",
+        "   - Update dev/progress.txt with what was accomplished.",
+        "   - Update .planning/STATE.md if any decisions were made.",
+        "   - Git commit all final changes together.",
+        reviewGateBlock,
+        "",
+        "## Deviation Rules",
+        "If you encounter unexpected situations during execution, follow AGENTS.md deviation rules:",
+        "- D1-D3 (cosmetic, missing dep, unrelated test failure): Auto-fix and log in progress.txt",
+        "- D4-D5 (ambiguous requirement, architectural decision): STOP immediately, mark task as blocked in task.json, log reason in STATE.md"
+      ].join("\n");
+    }
+
+    // Opus direct task
+    if (task.assignee === "opus") {
+      return [
+        ...taskHeader,
+        "## Execution Strategy — Direct (Opus)",
+        "This is a planning/review task. Complete it directly without sub-agents.",
+        "",
+        "1. Read AGENTS.md and relevant docs for this task.",
+        "2. Complete the task yourself (planning, review, or documentation).",
+        "3. Update dev/task.json (set status to done).",
+        "4. Update dev/progress.txt with what was accomplished.",
+        "5. Update .planning/STATE.md if any decisions were made.",
+        "6. Git commit all final changes together.",
+        reviewGateBlock,
+        "",
+        "## Deviation Rules",
+        "If you encounter unexpected situations during execution, follow AGENTS.md deviation rules:",
+        "- D1-D3 (cosmetic, missing dep, unrelated test failure): Auto-fix and log in progress.txt",
+        "- D4-D5 (ambiguous requirement, architectural decision): STOP immediately, mark task as blocked in task.json, log reason in STATE.md"
+      ].join("\n");
+    }
+
+    // Default: Sonnet sub-agent execution
+    return [
+      ...taskHeader,
       "## Scale-Based Execution",
       "Before implementing, estimate how many files this task will touch:",
       `- 1-${smallThreshold} files (small): Execute directly with a single Sonnet agent`,
@@ -308,6 +719,7 @@ function buildPrompt(readyTasks, config) {
       "7. Update dev/progress.txt with what was accomplished.",
       "8. Update .planning/STATE.md if any decisions were made.",
       "9. Git commit all final changes together.",
+      reviewGateBlock,
       "",
       "## Deviation Rules",
       "If you encounter unexpected situations during execution, follow AGENTS.md deviation rules:",
@@ -330,6 +742,185 @@ function buildPrompt(readyTasks, config) {
     "3. Prefer planning the next slice over making risky assumptions.",
     "4. Follow deviation rules in AGENTS.md (D1-D3: auto-fix and log, D4-D5: STOP and mark blocked)."
   ].join("\n");
+}
+
+/**
+ * Build the prompt for the final iteration review phase.
+ * Instructs Opus to dispatch parallel reviewers (multi-AI), collect findings,
+ * triage, create fix tasks, and loop until convergence.
+ * @param {object} config - Autopilot configuration
+ * @param {number} round - Current review round number (1-based)
+ * @param {string|null} previousFindings - Summary of previous round findings, or null for first round
+ * @returns {string} The final review prompt
+ */
+function buildFinalReviewPrompt(config, round, previousFindings) {
+  const progress = getProgressTail();
+  const summary = getTaskProgressSummary();
+  const planConfig = readJson(".planning/config.json", {});
+  const finalReviewConfig = planConfig?.final_review ?? {};
+  const tasks = getTasks();
+  const maxRounds = computeMaxReviewRounds({
+    taskCount: tasks.length,
+    sourceFileCount: countSourceFiles(),
+    configMaxRounds: finalReviewConfig.max_rounds,
+    reviewStrategy: planConfig?.review_strategy
+  });
+  const docReviewers = finalReviewConfig.parallel_reviewers?.docs ?? ["opus"];
+  const codeReviewers = finalReviewConfig.parallel_reviewers?.code ?? ["sonnet"];
+  const codexAvailable = checkCodexPrerequisites().available;
+
+  // Filter out codex if not available
+  const activeDocReviewers = codexAvailable ? docReviewers : docReviewers.filter((r) => r !== "codex");
+  const activeCodeReviewers = codexAvailable ? codeReviewers : codeReviewers.filter((r) => r !== "codex");
+
+  const reviewToolsSection = Object.entries(planConfig?.review_tools ?? {})
+    .map(([name, info]) => `- **${name}**: ${info.description}`)
+    .join("\n");
+
+  const parts = [
+    "You are the Opus orchestrator entering the FINAL ITERATION REVIEW phase.",
+    `All ${summary.total} tasks are complete. Now audit the entire deliverable for quality.`,
+    "",
+    "## Mandatory Reading (every round)",
+    "Read these files before proceeding:",
+    "- AGENTS.md (role division, review gates, rationalization blockers)",
+    "- .ai/recipes/review-final-iteration.md (this phase's full recipe)",
+    "- .planning/STATE.md",
+    "- docs/prd/ (the PRD that defines what was supposed to be built)",
+    "",
+    `## Final Review Round ${round}/${maxRounds}`,
+    "",
+    `Recent progress:`,
+    progress || "(no progress logged yet)",
+    ""
+  ];
+
+  if (previousFindings) {
+    parts.push(
+      "## Previous Round Findings",
+      "The previous review round found these issues. Verify whether they have been fixed:",
+      "",
+      previousFindings,
+      ""
+    );
+  }
+
+  parts.push(
+    "## Step 1: Dispatch Parallel Reviewers",
+    "",
+    "Launch ALL of the following review agents in parallel. Each reviewer works independently.",
+    ""
+  );
+
+  // Document reviewers
+  for (const reviewer of activeDocReviewers) {
+    if (reviewer === "codex") {
+      parts.push(
+        "### Codex — Document Review",
+        "Delegate to Codex CLI via codex-bridge (see AGENTS.md Codex Delegation Protocol).",
+        "Codex reviews: MRD completeness, PRD quality, tech spec accuracy, design doc alignment.",
+        "Apply the methodology from: pm-skills, superpowers.",
+        "Output findings as a structured list in the handoff result.",
+        ""
+      );
+    } else {
+      const model = reviewer === "opus" ? "opus" : "sonnet";
+      parts.push(
+        `### ${reviewer.charAt(0).toUpperCase() + reviewer.slice(1)} — Document Review`,
+        `Launch a sub-Agent with \`model: '${model}'\` (no worktree needed for read-only review).`,
+        "Review: MRD completeness, PRD quality, tech spec accuracy, design doc alignment.",
+        "Apply review-mrd-prd.md and review-tech-design.md recipes.",
+        "Use methodology from: pm-skills, superpowers, impeccable, ui-ux-pro-max-skill.",
+        "Return a structured findings list.",
+        ""
+      );
+    }
+  }
+
+  // Code reviewers
+  for (const reviewer of activeCodeReviewers) {
+    if (reviewer === "codex") {
+      parts.push(
+        "### Codex — Code & Test Review",
+        "Delegate to Codex CLI via codex-bridge.",
+        "Codex reviews: code quality, test coverage (build PRD-to-test matrix), TDD compliance, security.",
+        "Apply the methodology from: superpowers, impeccable.",
+        "Output findings as a structured list.",
+        ""
+      );
+    } else {
+      const model = reviewer === "sonnet" ? "sonnet" : "opus";
+      parts.push(
+        `### ${reviewer.charAt(0).toUpperCase() + reviewer.slice(1)} — Code & Test Review`,
+        `Launch a sub-Agent with \`model: '${model}', isolation: 'worktree'\`.`,
+        "Review: code quality (review-code.md), test coverage (review-test-coverage.md),",
+        "TDD compliance, frontend quality (impeccable /audit if applicable), security.",
+        "Build a PRD-to-test coverage matrix — every PRD requirement MUST have a test.",
+        "Return a structured findings list.",
+        ""
+      );
+    }
+  }
+
+  parts.push(
+    "## Step 2: Collect & Deduplicate",
+    "",
+    "After ALL reviewers complete:",
+    "1. Collect findings from every reviewer",
+    "2. Deduplicate — same issue from multiple reviewers counts as ONE",
+    "3. Classify each unique finding:",
+    "   - **BUG**: Behavior doesn't match PRD/acceptance criteria → MUST FIX",
+    "   - **SECURITY**: Vulnerability or exposed secret → MUST FIX (P0)",
+    "   - **COVERAGE GAP**: PRD requirement without test → MUST FIX",
+    "   - **STYLE**: Formatting/naming only → SKIP",
+    "   - **FALSE POSITIVE**: Reviewer misunderstood → SKIP with justification",
+    "   - **ENHANCEMENT**: Good idea, out of scope → LOG in STATE.md",
+    "",
+    "## Step 3: Triage & Fix",
+    "",
+    "For each BUG/SECURITY/COVERAGE GAP:",
+    "1. Create a fix task (add to dev/task.json with status todo, type: review)",
+    "2. Dispatch a Sonnet or Codex sub-agent to fix it (with worktree isolation)",
+    "3. After fix: verify the fix, merge, and mark task done",
+    "",
+    "## Step 4: Record & Converge",
+    "",
+    `Record this round's results in dev/review/FINAL-REVIEW-ROUND-${round}.md`,
+    "Update dev/progress.txt with what was reviewed and fixed.",
+    "Update .planning/STATE.md.",
+    "Git commit all changes.",
+    "",
+    "## Convergence",
+    ""
+  );
+
+  if (round >= maxRounds) {
+    parts.push(
+      `This is round ${round}/${maxRounds} (FINAL). After this round:`,
+      "- Write ALL remaining unresolved issues to dev/review/FINAL-REVIEW-UNRESOLVED.md",
+      "- Include a clear summary: how many issues remain, their severity breakdown (BUG/SECURITY/COVERAGE GAP)",
+      "- Update STATE.md with status 'awaiting_user_decision' and the unresolved issue count",
+      "- The autopilot will PAUSE and ask the user whether to continue or accept as-is",
+      "- Do NOT start another review round — the user decides next steps"
+    );
+  } else {
+    parts.push(
+      `This is round ${round}/${maxRounds}.`,
+      "If zero new BUG/SECURITY/COVERAGE GAP findings → the review has CONVERGED. Phase is complete.",
+      "If there are new findings → fix them, and the autopilot will start the next review round automatically."
+    );
+  }
+
+  parts.push(
+    "",
+    "## Available Review Tools",
+    reviewToolsSection || "(none configured)",
+    "",
+    "## Deviation Rules",
+    "Follow AGENTS.md deviation rules. If an issue is ambiguous (D4), classify as FALSE POSITIVE rather than creating a bad fix."
+  );
+
+  return parts.join("\n");
 }
 
 async function waitWithCountdown(minutes) {
@@ -608,6 +1199,19 @@ function handleRunnerLine({ runner, line, outputStream, currentSessionId }) {
   return currentSessionId;
 }
 
+/**
+ * Spawn the configured AI runner as a child process, stream its output,
+ * detect quota/failure signals, and return the result.
+ * Handles session resume, timeout (SIGTERM → SIGKILL), and missing-session fallback.
+ * @param {object} options
+ * @param {string} options.prompt - The prompt to send
+ * @param {string} options.model - Model identifier
+ * @param {object} options.config - Autopilot configuration
+ * @param {object} options.state - Current autopilot state
+ * @param {string|null} options.taskId - Current task ID or null for idle
+ * @param {boolean} options.allowResumeFallback - Whether to retry with fresh session on missing session
+ * @returns {Promise<{exitCode: number, sessionId: string, failureCategory?: string, retryAfterSeconds?: number, failureHint?: string}>}
+ */
 async function invokeRunner({ prompt, model, config, state, taskId, allowResumeFallback = true }) {
   ensureDir(".autopilot/logs");
   const runner = resolveRunnerProfile(config);
@@ -695,9 +1299,13 @@ async function invokeRunner({ prompt, model, config, state, taskId, allowResumeF
   outputReader.on("line", (line) => {
     lastOutputAt = Date.now();
     logStream.write(`${line}\n`);
-    failureDetection = failureDetection || detectFailureCategory(line);
-    if (!failureHint && failureDetection) {
-      failureHint = line.trim();
+    const lineDetection = detectFailureCategory(line);
+    if (lineDetection) {
+      // Prefer structured detections with retryAfterSeconds over earlier matches
+      if (!failureDetection || (lineDetection.retryAfterSeconds != null && failureDetection.retryAfterSeconds == null)) {
+        failureDetection = lineDetection;
+        failureHint = line.trim();
+      }
     }
     if (isMissingSessionError(line)) {
       missingSessionDetected = true;
@@ -716,9 +1324,12 @@ async function invokeRunner({ prompt, model, config, state, taskId, allowResumeF
   child.stderr.on("data", (chunk) => {
     const text = chunk.toString("utf8");
     logStream.write(text);
-    failureDetection = failureDetection || detectFailureCategory(text);
-    if (!failureHint && failureDetection) {
-      failureHint = text.trim();
+    const stderrDetection = detectFailureCategory(text);
+    if (stderrDetection) {
+      if (!failureDetection || (stderrDetection.retryAfterSeconds != null && failureDetection.retryAfterSeconds == null)) {
+        failureDetection = stderrDetection;
+        failureHint = text.trim();
+      }
     }
     if (isMissingSessionError(text)) {
       missingSessionDetected = true;
@@ -735,9 +1346,12 @@ async function invokeRunner({ prompt, model, config, state, taskId, allowResumeF
     spawnError = error;
     const text = String(error.message ?? error);
     logStream.write(`${text}\n`);
-    failureDetection = failureDetection || detectFailureCategory(text);
-    if (!failureHint && failureDetection) {
-      failureHint = text.trim();
+    const errorDetection = detectFailureCategory(text);
+    if (errorDetection) {
+      if (!failureDetection || (errorDetection.retryAfterSeconds != null && failureDetection.retryAfterSeconds == null)) {
+        failureDetection = errorDetection;
+        failureHint = text.trim();
+      }
     }
     if (isMissingSessionError(text)) {
       missingSessionDetected = true;
@@ -822,6 +1436,44 @@ async function main() {
   clearStopSignal();
 
   const state = loadState();
+
+  // Handle user decision after review pause
+  if (state.status === "awaiting_user_decision") {
+    if (acceptAsIs) {
+      console.log("User accepted current state as-is. Marking review as done.");
+      saveState({ ...state, status: "final_review_done" });
+      process.exit(0);
+    } else if (continueReview) {
+      // Grant additional rounds (same as computed max, effectively doubles the budget)
+      const planConfig = readJson(".planning/config.json", {});
+      const currentRound = state.finalReviewRound ?? 0;
+      const additionalRounds = computeMaxReviewRounds({
+        taskCount: getTasks().length,
+        sourceFileCount: countSourceFiles(),
+        configMaxRounds: planConfig?.final_review?.max_rounds,
+        reviewStrategy: planConfig?.review_strategy
+      });
+      const newMax = currentRound + additionalRounds;
+      console.log(`Extending review: ${additionalRounds} more rounds (new max: ${newMax}).`);
+      // Temporarily override config max_rounds for this session
+      if (!planConfig.final_review) planConfig.final_review = {};
+      planConfig.final_review.max_rounds = newMax;
+      writeJson(".planning/config.json", planConfig);
+      saveState({ ...state, status: "final_review", finalReviewRound: currentRound });
+      console.log("Resuming review...");
+    } else {
+      console.log("");
+      console.log("Autopilot is paused — awaiting your decision.");
+      console.log("Unresolved issues: dev/review/FINAL-REVIEW-UNRESOLVED.md");
+      console.log("");
+      console.log("Options:");
+      console.log("  pnpm work --continue-review  → extend review rounds");
+      console.log("  pnpm work --accept-as-is     → accept current state and finish");
+      console.log("");
+      process.exit(0);
+    }
+  }
+
   saveState({ ...state, status: "starting" });
 
   process.on("SIGINT", () => {
@@ -839,7 +1491,27 @@ async function main() {
     }
 
     const currentState = loadState();
-    const readyTasks = getReadyTasks();
+    let readyTasks = getReadyTasks();
+
+    // Pre-flight: if any ready task needs codex, verify prerequisites — skip codex tasks if not available (#R4-3)
+    const codexCheck = checkCodexPrerequisites();
+    if (!codexCheck.available) {
+      const codexTasks = readyTasks.filter((t) => t.assignee === "codex");
+      if (codexTasks.length > 0) {
+        console.warn(`[autopilot] Codex prerequisites missing — skipping ${codexTasks.length} codex-assigned task(s):`);
+        for (const issue of codexCheck.issues) console.warn(`  - ${issue}`);
+        for (const ct of codexTasks) console.warn(`  - Skipped: ${ct.id} (${ct.name})`);
+        readyTasks = readyTasks.filter((t) => t.assignee !== "codex");
+        if (readyTasks.length === 0) {
+          console.warn(`[autopilot] No non-codex tasks ready. Waiting for next round.`);
+          if (runOnce) break;
+          await waitWithCountdown(1);
+          continue;
+        }
+      }
+    }
+
+    // Compute task/model/prompt AFTER codex filtering so they reflect the actual work (#R4-3)
     const task = readyTasks.length > 0 ? readyTasks[0] : null;
     const model = resolveModel(task, config);
     const prompt = buildPrompt(readyTasks, config);
@@ -854,6 +1526,11 @@ async function main() {
     console.log("");
     console.log(`Autopilot round ${loadState().round}`);
     console.log(`Mode: ${task ? `task ${task.id}` : "idle planning"}`);
+    if (task?.assignee === "codex") {
+      console.log(`Assignee: codex (delegation via Opus prompt)`);
+    } else if (task?.assignee) {
+      console.log(`Assignee: ${task.assignee}`);
+    }
     console.log(`Runner: ${renderRunnerSummary(config)}`);
     console.log(`Model: ${model}`);
 
@@ -936,6 +1613,147 @@ async function main() {
 
       if (readyCheck.length === 0) {
         if (finalSummary.done >= finalSummary.total && finalSummary.total > 0) {
+          // --- Final Iteration Review Phase ---
+          const planConfig = readJson(".planning/config.json", {});
+          const finalReviewEnabled = planConfig?.final_review?.enabled ?? false;
+          const currentStatus = loadState().status;
+
+          if (finalReviewEnabled && currentStatus !== "final_review_done" && currentStatus !== "awaiting_user_decision") {
+            const reviewStrategy = planConfig?.review_strategy;
+            const maxRounds = computeMaxReviewRounds({
+              taskCount: finalSummary.total,
+              sourceFileCount: countSourceFiles(),
+              configMaxRounds: planConfig.final_review.max_rounds,
+              reviewStrategy
+            });
+            let reviewRound = loadState().finalReviewRound ?? 0;
+
+            if (reviewRound >= maxRounds) {
+              // Max rounds reached — check if unresolved issues exist
+              const unresolvedPath = "dev/review/FINAL-REVIEW-UNRESOLVED.md";
+              const unresolvedContent = readText(unresolvedPath, "");
+              const hasUnresolved = unresolvedContent.trim().length > 0;
+
+              if (hasUnresolved) {
+                console.log("");
+                console.log("╔══════════════════════════════════════════════════════════╗");
+                console.log("║  REVIEW PAUSED — Awaiting User Decision                 ║");
+                console.log("╠══════════════════════════════════════════════════════════╣");
+                console.log(`║  Completed ${reviewRound} review rounds (max reached).`);
+                console.log("║  Unresolved issues remain.");
+                console.log("║  Details: dev/review/FINAL-REVIEW-UNRESOLVED.md");
+                console.log("║                                                          ║");
+                console.log("║  Options:                                                ║");
+                console.log("║    pnpm work --continue-review  → extend review rounds   ║");
+                console.log("║    pnpm work --accept-as-is     → accept and finish       ║");
+                console.log("╚══════════════════════════════════════════════════════════╝");
+                console.log("");
+                saveState({ ...loadState(), status: "awaiting_user_decision" });
+                break;
+              }
+
+              console.log(`Final review completed after ${reviewRound} rounds — no unresolved issues. (${finalSummary.done}/${finalSummary.total})`);
+              saveState({ ...loadState(), status: "final_review_done" });
+              break;
+            }
+
+            reviewRound += 1;
+            console.log("");
+            console.log(`=== FINAL ITERATION REVIEW — Round ${reviewRound}/${maxRounds} ===`);
+
+            const previousFindingsPath = `dev/review/FINAL-REVIEW-ROUND-${reviewRound - 1}.md`;
+            const previousFindings = reviewRound > 1 ? readText(previousFindingsPath, null) : null;
+
+            const reviewPrompt = buildFinalReviewPrompt(config, reviewRound, previousFindings);
+            const reviewModel = config.models.planning;
+
+            saveState({
+              ...loadState(),
+              status: "final_review",
+              finalReviewRound: reviewRound,
+              round: (loadState().round ?? 0) + 1
+            });
+
+            console.log(`Runner: ${renderRunnerSummary(config)}`);
+            console.log(`Model: ${reviewModel}`);
+
+            const reviewResult = await invokeRunner({
+              prompt: reviewPrompt,
+              model: reviewModel,
+              config,
+              state: loadState(),
+              taskId: `final-review-${reviewRound}`
+            });
+
+            if (reviewResult.exitCode === 0) {
+              // Check if new fix tasks were created (tasks went from all-done to some-todo)
+              const postReviewTasks = getTasks();
+              const newTodoTasks = postReviewTasks.filter((t) => t.status === "todo");
+
+              if (newTodoTasks.length > 0) {
+                // zero_bug mode: check if remaining bugs are below threshold
+                if (reviewStrategy?.mode === "zero_bug") {
+                  const threshold = reviewStrategy.zero_bug_threshold ?? 3;
+                  if (newTodoTasks.length < threshold) {
+                    console.log(`Review round ${reviewRound}: ${newTodoTasks.length} issue(s) remain (below zero_bug threshold ${threshold}). CONVERGED.`);
+                    saveState({ ...loadState(), status: "final_review_done" });
+                    break;
+                  }
+                }
+
+                console.log(`Review round ${reviewRound} created ${newTodoTasks.length} fix task(s). Executing fixes before next review.`);
+                // Let the main loop pick up fix tasks naturally
+                if (runOnce) break;
+                continue;
+              }
+
+              // No new tasks = converged or max rounds
+              if (reviewRound >= maxRounds) {
+                console.log(`Final review completed after ${reviewRound} rounds (max reached).`);
+                saveState({ ...loadState(), status: "final_review_done" });
+                break;
+              }
+
+              console.log(`Review round ${reviewRound} found no new issues. Review CONVERGED.`);
+              saveState({ ...loadState(), status: "final_review_done" });
+              break;
+            }
+
+            // Review round failed (quota, error, etc.) — handle via normal retry logic
+            if (reviewResult.failureCategory === "quota") {
+              console.log("Quota hit during final review. Will retry after wait.");
+              // Decrement round so it retries the same round
+              saveState({ ...loadState(), finalReviewRound: reviewRound - 1 });
+            }
+
+            // Fall through to normal error handling below
+            saveState({
+              ...loadState(),
+              status: reviewResult.failureCategory === "quota" ? "waiting_quota" : "waiting_retry",
+              sessionId: reviewResult.sessionId,
+              lastExitCode: reviewResult.exitCode,
+              lastFailureCategory: reviewResult.failureCategory ?? null,
+              lastFailureHint: reviewResult.failureHint ?? ""
+            });
+
+            if (runOnce) break;
+
+            const shouldRetry = reviewResult.failureCategory === "quota"
+              ? await waitForRetry({
+                  fallbackMinutes: config.loop.waitMinutes ?? 30,
+                  failureHint: reviewResult.failureHint,
+                  retryAfterSeconds: reviewResult.retryAfterSeconds ?? null
+                })
+              : await waitWithCountdown(config.loop.waitMinutes ?? 30);
+
+            if (!shouldRetry) {
+              saveState({ ...loadState(), status: "stopped" });
+              console.log("Autopilot interrupted during final review wait.");
+              break;
+            }
+            continue;
+          }
+
           console.log(`All tasks completed! (${finalSummary.done}/${finalSummary.total})`);
           break;
         }
@@ -967,9 +1785,18 @@ async function main() {
     }
 
     if (result.failureCategory === "quota") {
-      console.log(`AI quota or rate limit detected. Waiting for capacity to recover ${retryCount}/${config.loop.maxRetries}.`);
+      const retryInfo = result.retryAfterSeconds != null
+        ? ` (retry after ${formatDuration(result.retryAfterSeconds)})`
+        : "";
+      console.log(`AI quota or rate limit detected${retryInfo}. Waiting for capacity to recover ${retryCount}/${config.loop.maxRetries}.`);
+      if (result.failureHint) {
+        console.log(`  Hint: ${result.failureHint.slice(0, 200)}`);
+      }
     } else {
       console.log(`AI exited with code ${result.exitCode}. Waiting before retry ${retryCount}/${config.loop.maxRetries}.`);
+      if (result.failureHint) {
+        console.log(`  Hint: ${result.failureHint.slice(0, 200)}`);
+      }
     }
     const shouldContinue = result.failureCategory === "quota"
       ? await waitForRetry({
@@ -1001,4 +1828,4 @@ if (isDirectRun) {
 }
 
 // Export for testing
-export { getTasks, getReadyTasks, getNextTask, getTaskProgressSummary, detectFailureCategory, resolveModel, buildPrompt };
+export { getTasks, getReadyTasks, getNextTask, getTaskProgressSummary, detectFailureCategory, tryParseStructuredError, detectFailureCategoryFromText, resolveModel, buildPrompt, buildReviewGateInstructions, buildFinalReviewPrompt, computeMaxReviewRounds };

@@ -47,6 +47,31 @@ if (missing.length > 0) {
   }
 }
 
+// --- Optional module checks ---
+if (config?.optional_modules?.payment?.enabled) {
+  const envPath = path.join(root, ".env.local");
+  const envPathAlt = path.join(root, ".env");
+  let envContent = "";
+  if (existsSync(envPath)) {
+    envContent = readFileSync(envPath, "utf8");
+  } else if (existsSync(envPathAlt)) {
+    envContent = readFileSync(envPathAlt, "utf8");
+  }
+
+  if (!envContent) {
+    issues.push("Payment module enabled but no .env.local or .env file found. See .ai/recipes/payment-integration-guide.md");
+  } else {
+    const requiredKeys = ["PAYMENT_API_KEY", "PAYMENT_WEBHOOK_SECRET"];
+    for (const key of requiredKeys) {
+      // Match KEY=value where value is not empty
+      const pattern = new RegExp(`^${key}=.+`, "m");
+      if (!pattern.test(envContent)) {
+        issues.push(`Payment module enabled but ${key} is missing or empty in .env`);
+      }
+    }
+  }
+}
+
 if (issues.length > 0) {
   console.error("Health check failed:");
   for (const issue of issues) {

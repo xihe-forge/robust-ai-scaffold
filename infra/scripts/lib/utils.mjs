@@ -40,6 +40,11 @@ registerExitCleanup();
 /**
  * Acquire a lockfile for the given absolute path, retrying up to LOCK_RETRY_COUNT times.
  * Returns the lock file path on success, throws on failure.
+ *
+ * Uses Atomics.wait() for the retry delay — this blocks the thread synchronously,
+ * which is intentional: lock acquisition must be synchronous to guarantee atomicity
+ * in withFileLock(). Atomics.wait is preferred over a busy-loop because it yields
+ * the CPU to the OS scheduler during the wait.
  */
 function acquireLock(absolutePath) {
   const lockPath = `${absolutePath}.lock`;

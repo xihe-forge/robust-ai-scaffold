@@ -18,6 +18,7 @@ export interface ProjectTask {
   assignee: string;
   depends_on: string[];
   acceptance_criteria: string[];
+  steps?: string[];
 }
 
 export interface PlanningConfig {

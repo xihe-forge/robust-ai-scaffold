@@ -68,6 +68,19 @@ const RUNNER_TEMPLATES = {
       "{{prompt}}"
     ]
   },
+  gemini: {
+    displayName: "Google Gemini CLI",
+    command: "gemini",
+    supportsResume: false,
+    promptTransport: "stdin",
+    outputParser: "plain-text",
+    doctorArgs: ["--version"],
+    newSessionArgs: [
+      "-m",
+      "{{model}}"
+    ],
+    resumeSessionArgs: []
+  },
   custom: {
     displayName: "Custom AI command",
     command: "",
@@ -89,6 +102,10 @@ const MODEL_DEFAULTS = {
     planning: "gpt-5.4",
     execution: "gpt-5-codex"
   },
+  gemini: {
+    planning: "gemini-2.5-pro",
+    execution: "gemini-2.5-flash"
+  },
   custom: {
     planning: "default-planning-model",
     execution: "default-execution-model"
@@ -101,6 +118,7 @@ export const DEFAULT_AUTOPILOT_CONFIG = {
     profiles: {
       claude: buildOfficialProfile("claude"),
       codex: buildOfficialProfile("codex"),
+      gemini: { ...RUNNER_TEMPLATES.gemini },
       custom: { ...RUNNER_TEMPLATES.custom }
     }
   },
@@ -135,6 +153,11 @@ export const RUNNER_CHOICES = [
     mode: "codex",
     label: "Codex CLI",
     description: "Use codex exec for unattended work rounds."
+  },
+  {
+    mode: "gemini",
+    label: "Gemini CLI",
+    description: "Use Google Gemini CLI for frontend/design tasks."
   },
   {
     mode: "custom",
@@ -385,6 +408,10 @@ export function normalizeAutopilotConfig(rawConfig = {}) {
     normalized.runner.profiles.claude
   );
   normalized.runner.profiles.codex = buildOfficialProfile("codex", normalized.runner.profiles.codex);
+  normalized.runner.profiles.gemini = mergeDeep(
+    RUNNER_TEMPLATES.gemini,
+    normalized.runner.profiles.gemini ?? {}
+  );
   normalized.runner.profiles.custom = mergeDeep(
     RUNNER_TEMPLATES.custom,
     normalized.runner.profiles.custom
@@ -448,7 +475,9 @@ export function renderRunnerSummary(config) {
     ? `permission=${runner.permissionMode}`
     : runner.mode === "codex"
       ? `sandbox=${runner.sandboxMode}`
-      : `transport=${runner.promptTransport}`;
+      : runner.mode === "gemini"
+        ? `model=${runner.command}`
+        : `transport=${runner.promptTransport}`;
 
   return `${getRunnerModeLabel(runner.mode)} (${runner.command || "not configured"}, ${detail})`;
 }
@@ -606,6 +635,25 @@ async function configureCodexProfile(rl, config, modelDefaults) {
   return config;
 }
 
+async function configureGeminiProfile(rl, config, modelDefaults) {
+  const current = config.runner.profiles.gemini;
+
+  config.runner.mode = "gemini";
+  current.command = await promptText(rl, "Gemini command", current.command || "gemini");
+  config.runner.profiles.gemini = mergeDeep(RUNNER_TEMPLATES.gemini, current);
+  config.models.planning = await promptText(
+    rl,
+    "Planning model",
+    modelDefaults.planning
+  );
+  config.models.execution = await promptText(
+    rl,
+    "Execution model",
+    modelDefaults.execution
+  );
+  return config;
+}
+
 async function configureCustomProfile(rl, config, modelDefaults) {
   const current = config.runner.profiles.custom;
 
@@ -709,6 +757,10 @@ export async function configureAutopilotWithReadline(rl, currentConfig = DEFAULT
 
   if (selectedMode === "codex") {
     return configureCodexProfile(rl, config, modelDefaults);
+  }
+
+  if (selectedMode === "gemini") {
+    return configureGeminiProfile(rl, config, modelDefaults);
   }
 
   return configureCustomProfile(rl, config, modelDefaults);
