@@ -156,6 +156,7 @@ Review gate configuration is in `.planning/config.json` under `review_gates`.
 | **Code implementation done** | `.ai/recipes/review-code.md` | superpowers, impeccable, ui-ux-pro-max-skill | YES |
 | **Testing complete** | `.ai/recipes/review-test-coverage.md` | superpowers, pm-skills | YES |
 | **Marketing materials created** | `.ai/recipes/review-marketing.md` | marketingskills, pm-skills | No (advisory) |
+| **Public pages deployed** | `.ai/recipes/review-seo-aeo.md` | xihe-seo-aeo | No (advisory) |
 
 **Supplementary Checklists** (referenced by review recipes):
 - `.ai/recipes/frontend-review-checklist.md` — real-world frontend bugs (layout, auth UI, pricing, responsive, i18n). **Mandatory** for all frontend code reviews.

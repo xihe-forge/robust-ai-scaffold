@@ -71,6 +71,13 @@
       "recipe": ".ai/recipes/review-marketing.md",
       "tools": ["marketingskills", "pm-skills"],
       "triggers": ["docs/marketing/", "docs/mrd/"]
+    },
+    "seo_aeo_review": {
+      "enabled": true,
+      "blocking": false,
+      "recipe": ".ai/recipes/review-seo-aeo.md",
+      "tools": ["xihe-seo-aeo"],
+      "triggers": ["apps/web/", "apps/*/src/app/", "public/", "src/app/"]
     }
   },
   "optional_modules": {
@@ -121,6 +128,16 @@
     "marketingskills": {
       "path": "opensource/marketingskills",
       "description": "34+ marketing skills — SEO, CRO, growth, positioning"
+    },
+    "xihe-seo-aeo": {
+      "path": "D:/workspace/ai/research/xiheAi/xihe-seo-aeo",
+      "description": "SEO + AEO audit — crawl, Schema validation, llms.txt, FAQ extraction, Lighthouse comparison",
+      "skills": ["seo-audit", "aeo-audit", "seo-report", "aeo-monitor"],
+      "scripts": {
+        "crawl": "node scripts/crawl-page.mjs",
+        "llms-txt": "node scripts/generate-llms-txt.mjs",
+        "ai-citation": "node scripts/check-ai-citation.mjs"
+      }
     }
   }
 }

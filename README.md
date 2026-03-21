@@ -1,6 +1,6 @@
 # Robust AI Scaffold
 
-A production-grade scaffold for **autonomous AI software development** — combining durable planning state, 24/7 autopilot execution, and intelligent quota self-healing.
+A production-grade scaffold for **autonomous AI software development** -- combining durable planning state, 24/7 autopilot execution, and intelligent quota self-healing.
 
 Built for teams that want AI agents to ship code continuously, not just respond to prompts.
 
@@ -10,22 +10,26 @@ You describe a project idea. The scaffold:
 
 1. **Interviews** you to clarify scope, requirements, and priorities
 2. **Generates** a structured project plan (tasks, milestones, acceptance criteria)
-3. **Executes autonomously** using a two-tier agent model (Opus orchestrates, Sonnet implements)
-4. **Survives interruptions** — quota exhaustion, rate limits, process crashes — and resumes where it left off
+3. **Executes autonomously** using a multi-agent model (Opus orchestrates, Sonnet/Codex implement)
+4. **Survives interruptions** -- quota exhaustion, rate limits, process crashes -- and resumes where it left off
 
 The result is a self-governing development loop that runs until the work is done.
 
 ## Key Design Decisions
 
-### Two-Tier Agent Model (Opus + Sonnet)
+### Multi-Agent Model (Opus + Sonnet + Codex)
 
-The autopilot always runs the strongest model (Opus) as orchestrator. Opus reads the task queue, analyzes dependencies, plans decomposition, and dispatches Sonnet sub-agents for implementation. Every coding agent runs in **worktree isolation** — its own git branch and working directory — so parallel agents never conflict.
+The autopilot always runs the strongest model (Opus) as orchestrator. Opus reads the task queue, analyzes dependencies, plans decomposition, and dispatches workers for implementation. Workers can be:
 
-This is not just a cost optimization. The orchestrator needs persistent project memory (what's done, what's blocked, what decisions were made). Workers need fresh context focused on a single task. The two-tier split matches these fundamentally different context requirements.
+- **Sonnet sub-agents** -- launched with worktree isolation (each gets its own git branch and working directory)
+- **Codex CLI** -- delegated via the `codex-bridge/` PowerShell module for independent coding tasks
+- **Opus direct** -- planning/review tasks completed by the orchestrator itself
+
+Task assignment is controlled by the `assignee` field in `dev/task.json` (`"sonnet"`, `"codex"`, or `"opus"`).
 
 ### Quota Self-Healing
 
-When the AI runtime hits rate limits or quota exhaustion, most tools crash or burn retries. This scaffold recognizes quota failures as a distinct category — they don't consume the normal retry budget. The autopilot enters a `waiting_quota` state, parses reset times when available, and resumes automatically. A 24-hour run that hits 5 quota walls still completes all tasks.
+When the AI runtime hits rate limits or quota exhaustion, most tools crash or burn retries. This scaffold recognizes quota failures as a distinct category -- they don't consume the normal retry budget. The autopilot enters a `waiting_quota` state, parses reset times when available, and resumes automatically. A 24-hour run that hits multiple quota walls still completes all tasks.
 
 ### Durable Planning State
 
@@ -38,7 +42,7 @@ All planning artifacts live in `.planning/` as plain files:
 | `ROADMAP.md` | Milestones and phase sequence |
 | `STATE.md` | Current status, blockers, next step, decisions |
 
-The AI reads these before every round. Humans can edit them directly. There's no database, no server, no lock-in — just files in your repo.
+The AI reads these before every round. Humans can edit them directly. There's no database, no server, no lock-in -- just files in your repo.
 
 ### Additive-Only Project Adoption
 
@@ -48,17 +52,21 @@ Got an existing project? `pnpm adopt` overlays the planning layer without touchi
 
 ```
 robust-ai-scaffold/
-├── .planning/          # Durable planning state (PROJECT, REQUIREMENTS, ROADMAP, STATE)
-├── .ai/recipes/        # Agent playbooks (implement, review, diagnose, adopt)
-├── .ai/skills/         # External skill modules (impeccable, vercel-web-design)
-├── .claude/commands/   # CLI skill commands (/intake, /autopilot, /review, etc.)
-├── .autopilot/         # Runtime config (model selection, retry policy)
-├── apps/               # Application entrypoints
+├── .planning/          # Durable planning state (PROJECT, REQUIREMENTS, ROADMAP, STATE, config.json)
+├── .autopilot/         # Runtime config and state (model selection, retry policy, session state)
+├── .ai/
+│   ├── recipes/        # Agent playbooks (implement, review, diagnose, adopt, security-audit, etc.)
+│   ├── skills/         # External skill modules (impeccable, vercel-web-design)
+│   └── templates/      # Project type templates (saas, landing-page, api-only, fullstack)
+├── .claude/commands/   # CLI slash commands (/intake, /autopilot, /review, etc.)
+├── apps/               # Application entrypoints (web, api)
 ├── packages/           # Shared code and types
 ├── docs/               # Research, MRD, PRD, tech specs, design docs
-├── dev/                # task.json, progress.txt, bug fixes, review logs
-├── test/               # Unit, integration, e2e tests
+├── dev/                # task.json, progress.txt, metrics.json, bug fixes, review logs
+├── test/               # Unit tests (109 tests across 14 test suites)
 ├── infra/scripts/      # Autopilot engine, intake flow, health checks
+│   └── lib/            # Shared utilities (ai-runner, autopilot-runner, project-setup, utils)
+├── codex-bridge/       # PowerShell module for Codex CLI delegation
 ├── AGENTS.md           # Agent behavior rules (read before every round)
 └── package.json        # All commands: kickoff, work, adopt, health, etc.
 ```
@@ -68,7 +76,7 @@ robust-ai-scaffold/
 ### New Project
 
 ```bash
-git clone https://github.com/47Liu/robust-ai-scaffold.git my-project
+git clone https://github.com/xihe-forge/robust-ai-scaffold.git my-project
 cd my-project
 pnpm install
 pnpm kickoff
@@ -77,7 +85,7 @@ pnpm kickoff
 The intake flow will:
 - Choose your configuration mode (one-click / standard / advanced)
 - Ask you to describe your project idea
-- Generate structured planning files and task queue
+- Generate clarification questions via AI, then produce structured planning files and a task queue
 - Configure review strategy and AI runtime (standard/advanced modes)
 - Auto-verify and start autopilot (one-click mode) or confirm manually
 
@@ -91,18 +99,19 @@ The intake flow will:
 
 ### Review Strategies
 
-| Strategy | Behavior |
-|----------|----------|
-| **Auto** (default) | Review rounds scale with project complexity (5–12) |
-| **Zero-bug** | Keep reviewing until remaining bugs < threshold (default: 3) |
-| **Custom** | User specifies exact number of review rounds |
+Configured in `.planning/config.json` under `review_strategy`:
+
+| Strategy | `mode` value | Behavior |
+|----------|-------------|----------|
+| **Auto** (default) | `"auto"` | Review rounds scale with project complexity (5--12) |
+| **Zero-bug** | `"zero_bug"` | Keep reviewing until remaining bugs < threshold (default: 3) |
+| **Custom** | `"custom"` | User specifies exact number of review rounds via `custom_rounds` |
 
 ### Adopt Existing Project
 
 ```bash
 cd your-existing-project
-npx robust-ai-scaffold adopt
-# or copy the scaffold and run:
+# Copy scaffold files into the project, then:
 pnpm adopt
 ```
 
@@ -114,26 +123,38 @@ pnpm work
 
 The autopilot will:
 - Read `AGENTS.md` and `.planning/STATE.md`
-- Pick the highest-priority task with all dependencies satisfied
+- Pick the highest-priority task with all dependencies satisfied (cycle-safe)
 - Dispatch parallel sub-agents when multiple tasks are ready
+- Inject applicable review gates and skill instructions into the prompt
 - Review, merge, and verify before marking tasks complete
-- Handle quota/rate limits automatically
-- Loop until all tasks are done
+- Handle quota/rate limits automatically (dedicated state, does not consume retry budget)
+- Loop until all tasks are done, then enter final review
 
-### Other Commands
+### npm Scripts
 
 ```bash
 pnpm start-here          # Interactive menu
+pnpm kickoff             # Run project intake wizard (alias: pnpm setup, pnpm talk)
+pnpm work                # Start autopilot loop (alias: pnpm autopilot:start)
 pnpm health              # Validate project structure
 pnpm plan:status         # Show planning state
+pnpm adopt               # Overlay planning layer onto existing project
+pnpm autopilot:configure # Change AI runtime / model selection
 pnpm autopilot:status    # Show autopilot status
-pnpm autopilot:configure # Change AI runtime
-pnpm autopilot:stop      # Stop the autopilot
+pnpm autopilot:stop      # Stop the autopilot gracefully
+pnpm autopilot:doctor    # Diagnose autopilot issues
+pnpm nyquist             # Run Nyquist validation check
+pnpm test:unit           # Run unit tests (node --test)
+pnpm dev                 # Start dev servers (turbo)
+pnpm build               # Build all packages (turbo)
+pnpm typecheck           # Type-check all packages (turbo)
+pnpm lint                # Lint all packages (turbo)
+pnpm test                # Run all tests (turbo)
 ```
 
-### CLI Skill Commands
+### CLI Slash Commands
 
-These commands are available when using Claude Code in the project:
+Available via `.claude/commands/`:
 
 | Command | Purpose |
 |---------|---------|
@@ -150,16 +171,27 @@ These commands are available when using Claude Code in the project:
 
 ## External Skill Modules
 
-The scaffold's core architecture (autopilot, intake, review pipeline) is self-contained. External skill modules extend it for specialized domains:
+The scaffold's core architecture (autopilot, intake, review pipeline) is self-contained. External skill modules extend it for specialized frontend quality:
 
 | Module | Role | Source |
 |--------|------|--------|
-| **impeccable** | Frontend design generation & refinement, anti-AI-slop aesthetics | [impeccable](https://github.com/garkgodwin/impeccable) |
+| **impeccable** | Frontend design generation & refinement, anti-AI-slop aesthetics (9 skills + 7 reference docs) | [impeccable](https://github.com/garkgodwin/impeccable) |
 | **vercel-web-design** | Engineering UX quality gate (accessibility, performance, standards) | [vercel-labs](https://github.com/vercel-labs/web-interface-guidelines) |
 
-These two modules are **complementary**: impeccable handles visual aesthetics (anti-AI-slop), Vercel handles engineering standards (a11y, performance, UX). Both are used together for maximum frontend quality.
+These two modules are **complementary**: impeccable handles visual aesthetics (anti-AI-slop), Vercel handles engineering standards (a11y, performance, UX). Both are used together during reviews and final iteration.
 
-Skill registry: `.ai/skills/skill-registry.json` — supports dependency chains (`depends_on`) and topological execution ordering.
+Skill registry: `.ai/skills/skill-registry.json`
+- Skills declare `depends_on` edges (e.g., `polish` depends on `audit`)
+- Autopilot topologically sorts skills and injects them in correct order
+- Each task logs which skills were injected to `dev/progress.txt`
+
+**Phase mapping** (from `skill-registry.json`):
+
+| Phase | Skills injected |
+|-------|----------------|
+| `implement_frontend` | `impeccable/frontend-design` |
+| `review_frontend` | `impeccable/critique` -> `vercel-web-design/web-design-guidelines` -> `impeccable/audit` -> `impeccable/normalize` -> `impeccable/polish` |
+| `final_review` | `impeccable/audit` -> `vercel-web-design/web-design-guidelines` |
 
 ## Project Templates
 
@@ -167,174 +199,175 @@ The intake wizard offers project type templates to pre-configure the scaffold:
 
 | Template | Review Gates | Payment | TDD |
 |----------|-------------|---------|-----|
-| **SaaS** | All 5 gates on | Enabled | On |
-| **Landing Page** | Code + marketing only | Off | Off |
-| **API-only** | MRD/tech/code/test | Off | On |
-| **Full-stack** | MRD/tech/code/test | Off | On |
-| **Custom** | Manual configuration | — | — |
+| **SaaS** | MRD/PRD, Tech/Design, Code, Test, Marketing | Enabled | On |
+| **Landing Page** | Code + Marketing only | Off | Off |
+| **API-only** | MRD/Tech/Code/Test | Off | On |
+| **Full-stack** | MRD/Tech/Code/Test | Off | On |
+| **Custom** | Manual configuration | -- | -- |
 
-Templates also provide starter tasks and suggested phases. Select during intake or use one-click mode.
+Templates also provide starter tasks and suggested phases. Select during intake.
+
+Template files: `.ai/templates/{saas,landing-page,api-only,fullstack}.json`
 
 ## Cost & Metrics Tracking
 
-The autopilot persistently tracks cost and token usage in `dev/metrics.json`:
+The autopilot tracks per-task cost and token usage in `dev/metrics.json`:
 - Per-task: model, input/output tokens, cost USD, duration, status
-- Per-session: cumulative totals
+- Per-session: cumulative totals (tasks completed, total tokens, total cost, total duration)
 - View with `/cost` (summary) or `/cost detail` (per-task breakdown)
 
 ## Stage-Based Review Gates
 
-The scaffold enforces mandatory reviews at each development stage:
+The scaffold enforces mandatory reviews at each development stage. Review gate configuration is in `.planning/config.json` under `review_gates`.
 
 ```
-MRD/PRD Created ──► review-mrd-prd.md
-                         │ BLOCKING
-                         ▼
-Tech/Design Docs ──► review-tech-design.md ──► impeccable/frontend-design (cross-check)
-                         │ BLOCKING
-                         ▼
-Code Implementation► review-code.md ─────────► impeccable/audit + vercel/web-design-guidelines
-                         │ BLOCKING
-                         ▼
-Testing Complete ──► review-test-coverage.md ► PRD-to-test matrix (100% coverage)
-                         │ BLOCKING
-                         ▼
-Marketing ─────────► review-marketing.md
-                         │ Advisory
-                         ▼
-                      Phase Complete
+MRD/PRD Created -------> review-mrd-prd.md        [BLOCKING]
+                              |
+Tech/Design Docs ------> review-tech-design.md     [BLOCKING]
+                              |
+Code Implementation ---> review-code.md            [BLOCKING]
+                              |
+Testing Complete ------> review-test-coverage.md   [BLOCKING]  (100% PRD coverage required)
+                              |
+Marketing -------------> review-marketing.md       [Advisory]
+                              |
+SEO/AEO (web deploy) -> review-seo-aeo.md         [Advisory]
 ```
 
-**Key rule**: Tests must cover the **entire PRD** — every requirement needs at least one test. The test coverage review builds a PRD-to-test matrix and blocks on any gaps.
+Each gate specifies:
+- **Recipe**: the review playbook to follow (in `.ai/recipes/`)
+- **Tools**: opensource skill modules referenced during review
+- **Triggers**: file path patterns that activate the gate
+- **Blocking**: whether the gate must pass before proceeding
 
-Configure gates in `.planning/config.json` under `review_gates`. Each gate specifies triggers (file paths), tools, and whether it's blocking.
+**Supplementary checklists** referenced by review recipes:
+- `.ai/recipes/frontend-review-checklist.md` -- real-world frontend bugs (layout, auth UI, pricing, responsive, i18n). Mandatory for all frontend code reviews.
+- `.ai/recipes/payment-integration-guide.md` -- Creem + Wise setup and E2E test flow. Used when `optional_modules.payment.enabled` is true.
+- `.ai/recipes/security-audit.md` -- OWASP Top 10, dependency scanning, secrets detection, API security, frontend security.
+- `.ai/recipes/error-handling-and-logging.md` -- error safety and structured logging standards. Mandatory for all projects.
+
+**PRD-to-Test coverage rule**: Tests must cover the entire PRD. The test coverage review builds a coverage matrix (every PRD requirement -> corresponding tests) and blocks on any gaps.
 
 ## Final Iteration Review (Multi-AI Convergence)
 
-When all tasks complete, the autopilot doesn't just stop — it enters a **final review loop** where multiple AI models audit the entire deliverable in parallel:
+When all tasks complete, the autopilot enters a **final review loop** where multiple AI models audit the entire deliverable in parallel:
 
 ```
 All tasks done
-    │
-    ▼
-┌──────────────────────────────────────┐
-│ Opus dispatches parallel reviewers:  │
-│                                      │
-│  Docs: Opus + Codex CLI (parallel)   │
-│  Code: Sonnet + Codex CLI (parallel) │
-│                                      │
-│         ▼                            │
-│  Opus collects & triages findings    │
-│  (dedup, classify, filter)           │
-│         │                            │
-│    ┌────┴────┐                       │
-│    │         │                       │
-│ No issues  Has bugs                  │
-│    │         │                       │
-│    ▼         ▼                       │
-│ CONVERGED  Fix via Sonnet/Codex      │
-│            → next review round       │
-└──────────────────────────────────────┘
+    |
+    v
++--------------------------------------+
+| Opus dispatches parallel reviewers:  |
+|                                      |
+|  Docs: Opus + Codex CLI (parallel)   |
+|  Code: Sonnet + Codex CLI (parallel) |
+|                                      |
+|         v                            |
+|  Opus collects & triages findings    |
+|  (dedup, classify, filter)           |
+|         |                            |
+|    +----+----+                       |
+|    |         |                       |
+| No issues  Has bugs                  |
+|    |         |                       |
+|    v         v                       |
+| CONVERGED  Fix via Sonnet/Codex      |
+|            -> next review round      |
++--------------------------------------+
 ```
 
-Each reviewer operates independently using the review recipes and opensource tools. The main agent (Opus) acts as triage — only real bugs get fixed, false positives are skipped. The loop continues until issues converge to zero or max rounds are reached.
+Each reviewer operates independently using the review recipes and opensource tools. Opus acts as triage -- only BUG, SECURITY, and COVERAGE GAP findings get fixed; STYLE and FALSE POSITIVE are skipped.
 
-**Dynamic max rounds**: By default (`"auto"`), the round limit scales with project complexity — 3 for small projects, up to 10 for XL (>60 tasks or >100 source files). Override with a specific number in `.planning/config.json`.
+**Dynamic max rounds** (when `review_strategy.mode` is `"auto"`):
+
+| Project Size | Tasks | Source Files | Max Rounds |
+|---|---|---|---|
+| Small | <= 10 | <= 20 | 5 |
+| Medium | 11--30 | 21--50 | 7 |
+| Large | 31--60 | 51--100 | 10 |
+| XL | > 60 | > 100 | 12 |
+
+The higher tier wins when task count and file count fall in different tiers.
+
+**User decision gate**: When max rounds are reached and unresolved issues remain, the autopilot **pauses** (`awaiting_user_decision`) instead of silently finishing. The user chooses:
+- `pnpm work --continue-review` -- extend with another batch of review rounds
+- `pnpm work --accept-as-is` -- accept current state, mark review as done
 
 ## Autopilot State Machine
 
-The autopilot loop manages execution state through a finite state machine:
-
 ```
-                    ┌──────────────────────────┐
-                    │                          │
-                    ▼                          │
-              ┌──────────┐    exit=0     ┌────┴─────┐
-  start ─────►│  idle    ├─────────────◄─┤ running  │
-              └────┬─────┘               └──┬───┬───┘
-                   │                        │   │
-                   │ pick task              │   │ quota detected
-                   ▼                        │   ▼
-              ┌──────────┐                  │ ┌──────────────┐
-              │ running  │                  │ │waiting_quota │
-              └──────────┘                  │ │ (smart wait) │
-                                            │ └──────┬───────┘
-                          non-quota error    │        │ timer expires
-                                ┌───────────┘        │
-                                ▼                     │
-                          ┌──────────────┐            │
-                          │waiting_retry │            │
-                          │ (dumb wait)  │            │
-                          └──────┬───────┘            │
-                                 │                    │
-                                 └────────┬───────────┘
-                                          │
-                                          ▼
-                                    ┌──────────┐
-                                    │ running  │ (retry)
-                                    └──────────┘
+                    +---------------------------+
+                    |                           |
+                    v                           |
+              +----------+    exit=0     +------+-----+
+  start ----->|  idle    |<--------------| running    |
+              +----+-----+              +--+---+-----+
+                   |                       |   |
+                   | pick task             |   | quota detected
+                   v                       |   v
+              +----------+                 | +--------------+
+              | running  |                 | |waiting_quota |
+              +----------+                 | | (smart wait) |
+                                           | +------+-------+
+                          non-quota error   |       | timer expires
+                                +----------+       |
+                                v                  |
+                          +--------------+         |
+                          |waiting_retry |         |
+                          | (dumb wait)  |         |
+                          +------+-------+         |
+                                 |                 |
+                                 +--------+--------+
+                                          |
+                                          v
+                                    +----------+
+                                    | running  | (retry)
+                                    +----------+
 
 When all tasks done:
 
-              ┌──────────────┐
- all done ──► │ final_review │◄──── has fix tasks
-              │ (round N)    │         │
-              └──────┬───────┘         │
-                     │                 │
-              ┌──────┴───────┐         │
-              │              │         │
-          no issues    found bugs ─────┘
-              │        (fix → re-review)
-              ▼
-        ┌─────────────────┐
-        │final_review_done│
-        └─────────────────┘
+              +--------------+
+ all done --> | final_review |<---- has fix tasks
+              | (round N)    |        |
+              +------+-------+        |
+                     |                |
+              +------+-------+        |
+              |              |        |
+          no issues    found bugs ----+
+              |        (fix -> re-review)
+              v
+        +-----------------+
+        |final_review_done|
+        +-----------------+
 
 Max rounds reached with unresolved issues:
 
-        ┌──────────────┐
-        │ final_review  │
-        │ (max reached) │
-        └──────┬───────┘
-               │ has unresolved
-               ▼
-  ┌──────────────────────────┐
-  │ awaiting_user_decision   │
-  │ (autopilot paused)       │
-  └─────┬──────────┬─────────┘
-        │          │
+        +--------------+
+        | final_review  |
+        | (max reached) |
+        +------+-------+
+               | has unresolved
+               v
+  +--------------------------+
+  | awaiting_user_decision   |
+  | (autopilot paused)       |
+  +-----+----------+---------+
+        |          |
   --continue    --accept
    -review      -as-is
-        │          │
-        ▼          ▼
-  ┌──────────┐ ┌─────────────────┐
-  │ resume   │ │final_review_done│
-  │ review   │ └─────────────────┘
-  └──────────┘
+        |          |
+        v          v
+  +----------+ +-----------------+
+  | resume   | |final_review_done|
+  | review   | +-----------------+
+  +----------+
 ```
 
 **Key distinctions**:
-- `waiting_quota` does not consume the retry budget — rate limits are expected, not errors
+- `waiting_quota` does not consume the retry budget -- rate limits are expected, not errors
 - `final_review` dispatches multiple AI models in parallel for cross-validation
-- The review loop converges when zero new issues or max rounds reached
+- The review loop converges when zero new BUG/SECURITY/COVERAGE GAP issues are found
 - `awaiting_user_decision` ensures humans have final say when issues persist after max rounds
-
-## How It Compares
-
-| Capability | robust-ai-scaffold | superpowers | get-shit-done | workflows |
-|---|---|---|---|---|
-| Autonomous loop | Yes (24/7 with quota self-healing) | No (single session) | No (single session) | No (single session) |
-| Project scaffolding | Yes (intake interview → full project) | No | No | No |
-| Adopt existing project | Yes (additive overlay) | No | No | No |
-| Multi-runtime support | Claude Code, Codex CLI, Custom | Claude Code only | Claude Code only | Claude Code only |
-| Parallel agent execution | Yes (worktree isolation) | Yes (worktree) | Yes (wave execution) | Yes (orchestrator pattern) |
-| Model hierarchy | Opus orchestrator + Sonnet workers | Single model | Model profiles (quality/balanced/budget) | Single model |
-| Quota/rate limit recovery | Dedicated state machine | No | No | No |
-| Process resume after crash | Yes (durable state files) | No | No | No |
-| Quality gates | Review recipes + verification | Hard gates + rationalization blockers | Nyquist validation + deviation rules | 5-phase quality fixer |
-| Task dependency graph | Yes (depends_on with ready detection) | Manual ordering | DAG with wave grouping | Scale-based dispatch |
-
-**Our unique position**: the only scaffold that combines project creation, autonomous execution, and production resilience (quota handling, crash recovery, concurrent safety) in a single tool. Others optimize for single-session quality; we optimize for **continuous autonomous delivery**.
 
 ## Multi-Runtime Support
 
@@ -345,17 +378,32 @@ pnpm autopilot:configure
 ```
 
 Supported runtimes:
-- **Claude Code** — `claude` CLI with `--print` mode
-- **Codex CLI** — OpenAI's `codex` with `--full-auto`
-- **Custom** — any CLI that accepts a prompt on stdin and returns output on stdout
+- **Claude CLI** -- `claude` with `--print` mode
+- **Codex CLI** -- OpenAI's `codex` with `--full-auto`
+- **Custom** -- any CLI that accepts a prompt on stdin and returns output on stdout
+
+## Deploy Readiness
+
+Run `pnpm health` for basic structure validation, or add `--deploy-ready` for production checks:
+
+```bash
+node infra/scripts/health-check.mjs --deploy-ready
+```
+
+Deploy readiness checks:
+1. **Environment variables** -- production env file exists, no placeholder values
+2. **Secrets scan** -- walks `src/`, `apps/`, `packages/` for hardcoded keys/tokens/passwords
+3. **Build verification** -- runs `pnpm build` and checks for output directories
+4. **Package.json** -- name, version, private flag, no `file:`/`link:` dependencies
+5. **Legal pages** (if payment enabled) -- privacy policy, terms of service, support email
 
 ## Philosophy
 
-1. **Let AI clarify before coding** — the intake interview prevents wasted work
-2. **Planning state belongs in the repo** — not in a SaaS, not in a database
-3. **Autonomy requires resilience** — quota walls and crashes are expected, not exceptional
-4. **Small verifiable tasks** — every task has explicit acceptance criteria
-5. **Strongest model orchestrates, fastest model implements** — match model capability to task type
+1. **Let AI clarify before coding** -- the intake interview prevents wasted work
+2. **Planning state belongs in the repo** -- not in a SaaS, not in a database
+3. **Autonomy requires resilience** -- quota walls and crashes are expected, not exceptional
+4. **Small verifiable tasks** -- every task has explicit acceptance criteria
+5. **Strongest model orchestrates, fastest model implements** -- match model capability to task type
 
 ## Contributing
 
