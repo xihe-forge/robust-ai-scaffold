@@ -11,9 +11,19 @@
       "impeccable/normalize",
       "impeccable/polish"
     ],
+    "review_seo": [
+      "xihe-search-forge/seo-audit",
+      "xihe-search-forge/aeo-audit",
+      "xihe-search-forge/aeo-monitor",
+      "xihe-search-forge/seo-report"
+    ],
     "final_review": [
       "impeccable/audit",
-      "vercel-web-design/web-design-guidelines"
+      "vercel-web-design/web-design-guidelines",
+      "xihe-search-forge/seo-audit",
+      "xihe-search-forge/aeo-audit",
+      "xihe-search-forge/aeo-monitor",
+      "xihe-search-forge/seo-report"
     ]
   },
 
@@ -117,6 +127,42 @@
           "when": "Reviewing frontend code for Web Interface Guidelines compliance"
         }
       }
+    },
+
+    "xihe-search-forge": {
+      "version": "0.2.0",
+      "description": "SEO & AEO audit, monitoring, and reporting. AI search optimization and traditional SEO quality gates.",
+      "source": "https://github.com/xihe-forge/xihe-search-forge",
+      "license": "MIT",
+      "path": ".ai/skills/xihe-search-forge",
+      "trigger": {
+        "phase": ["review", "final_review", "deploy"],
+        "task_tags": ["seo", "aeo", "geo", "search", "marketing", "landing-page", "public-page"],
+        "file_patterns": ["*.html", "*.tsx", "*.jsx"]
+      },
+      "skills": {
+        "seo-audit": {
+          "file": "skills/seo-audit/SKILL.md",
+          "role": "seo_audit",
+          "when": "Full SEO audit with Lighthouse integration for public-facing pages"
+        },
+        "aeo-audit": {
+          "file": "skills/aeo-audit/SKILL.md",
+          "role": "aeo_audit",
+          "when": "AI Answer Engine Optimization audit (9-dimension scoring) for AI search visibility"
+        },
+        "aeo-monitor": {
+          "file": "skills/aeo-monitor/SKILL.md",
+          "role": "aeo_monitoring",
+          "when": "AI search citation tracking, sentiment analysis, and competitor comparison"
+        },
+        "seo-report": {
+          "file": "skills/seo-report/SKILL.md",
+          "role": "seo_reporting",
+          "when": "Before/after comparison and impact analysis of SEO/AEO changes",
+          "depends_on": "xihe-search-forge/seo-audit"
+        }
+      }
     }
   },
 
@@ -130,8 +176,14 @@
       "engineering_review": ["vercel-web-design/web-design-guidelines"],
       "refinement": ["impeccable/polish", "impeccable/normalize"]
     },
+    "review_seo": {
+      "seo_gate": ["xihe-search-forge/seo-audit", "xihe-search-forge/aeo-audit"],
+      "monitoring": ["xihe-search-forge/aeo-monitor"],
+      "reporting": ["xihe-search-forge/seo-report"]
+    },
     "final_review": {
-      "qa_gate": ["impeccable/audit", "vercel-web-design/web-design-guidelines"]
+      "qa_gate": ["impeccable/audit", "vercel-web-design/web-design-guidelines"],
+      "search_gate": ["xihe-search-forge/seo-audit", "xihe-search-forge/aeo-audit", "xihe-search-forge/aeo-monitor", "xihe-search-forge/seo-report"]
     }
   }
 }

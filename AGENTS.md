@@ -250,11 +250,13 @@ These are **not** part of the core autopilot — they extend it.
 |--------|------|----------|
 | **impeccable** | Frontend design generation & refinement (anti-AI-slop) | `.ai/skills/impeccable/` |
 | **vercel-web-design** | Engineering UX quality gate (a11y, performance, standards) | `.ai/skills/vercel-web-design/` |
+| **xihe-search-forge** | SEO & AEO audit, AI search monitoring, impact reporting | `.ai/skills/xihe-search-forge/` (git submodule) |
 
 **How they're used:**
 - During **implementation**: autopilot injects impeccable's `frontend-design.md` instructions for frontend tasks
 - During **review**: code reviewers apply impeccable `audit.md` (aesthetic) + vercel `web-design-guidelines.md` (engineering)
-- During **final review**: both modules are used as parallel quality gates
+- During **review_seo**: xihe-search-forge runs SEO audit, AEO audit (9-dimension), citation monitoring, and impact reporting
+- During **final review**: all three modules are used as parallel quality gates
 - **CLI commands**: `/design`, `/ux-audit`, `/review` invoke these skills directly
 
 **Skill dependency chains**: Skills declare `depends_on` in the registry — autopilot topologically sorts and injects them in correct order (e.g., audit before polish).

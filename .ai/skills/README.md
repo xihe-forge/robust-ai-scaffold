@@ -19,8 +19,14 @@ Pluggable, independent skill modules that extend the scaffold's capabilities. Ea
 │   ├── distill.md               # Simplify over-designed UI
 │   ├── extract.md               # Extract reusable components/tokens
 │   └── reference/               # Typography, color, motion, spatial, interaction, responsive, UX writing
-└── vercel-web-design/           # Engineering-grade UX quality gate
-    └── web-design-guidelines.md # Web Interface Guidelines compliance
+├── vercel-web-design/           # Engineering-grade UX quality gate
+│   └── web-design-guidelines.md # Web Interface Guidelines compliance
+└── xihe-search-forge/           # SEO & AEO audit + monitoring (git submodule)
+    └── skills/
+        ├── seo-audit/SKILL.md   # Full SEO audit with Lighthouse
+        ├── aeo-audit/SKILL.md   # AI search optimization (9-dimension scoring)
+        ├── aeo-monitor/SKILL.md # AI citation tracking + sentiment + competitors
+        └── seo-report/SKILL.md  # Before/after comparison & impact analysis
 ```
 
 ## Design Principles
@@ -30,14 +36,23 @@ Pluggable, independent skill modules that extend the scaffold's capabilities. Ea
 3. **Complementary, not competing** — impeccable handles visual aesthetics, vercel handles engineering standards
 4. **Phase-triggered** — autopilot invokes skills based on current phase and task type
 
+## Integration Methods
+
+| Module | Method | Update |
+|--------|--------|--------|
+| impeccable | Copied into repo | Manual |
+| vercel-web-design | Copied into repo | Manual |
+| xihe-search-forge | **Git submodule** | `git submodule update --remote` |
+
 ## Phase Mapping
 
-| Phase | impeccable | vercel |
-|-------|-----------|--------|
-| Frontend implementation | `frontend-design` (generate) | — |
-| Frontend review | `critique` + `audit` (aesthetic QA) | `web-design-guidelines` (engineering QA) |
-| Final review | `audit` (full audit) | `web-design-guidelines` (compliance) |
-| Pre-ship polish | `polish` + `normalize` | — |
+| Phase | impeccable | vercel | xihe-search-forge |
+|-------|-----------|--------|-------------------|
+| Frontend implementation | `frontend-design` (generate) | — | — |
+| Frontend review | `critique` + `audit` (aesthetic QA) | `web-design-guidelines` (engineering QA) | — |
+| SEO/AEO review | — | — | `seo-audit` → `aeo-audit` → `aeo-monitor` → `seo-report` |
+| Final review | `audit` (full audit) | `web-design-guidelines` (compliance) | All 4 skills (search quality gate) |
+| Pre-ship polish | `polish` + `normalize` | — | — |
 
 ## Adding New Skill Modules
 
