@@ -42,13 +42,15 @@ The autopilot system uses a multi-agent model:
 - `"opus"` — Planning/review task, Opus completes directly
 - `"sonnet"` (default) — Coding task, Opus dispatches Sonnet sub-Agents
 - `"codex"` — Coding task delegated to Codex CLI via codex-bridge
+- `"gemini"` — Coding task delegated to Gemini CLI via gemini-bridge
 
 **General Rules:**
 - The main autopilot process ALWAYS runs as Opus (the orchestrator)
 - Opus reads the task, decides how to break it down, then dispatches workers
 - Every Sonnet sub-Agent MUST use `model: 'sonnet'` and `isolation: 'worktree'`
 - Codex tasks use git worktree isolation via the `codex-bridge/` module
-- Opus reviews ALL worker output (Sonnet or Codex) before merging
+- Gemini tasks use git worktree isolation via the `gemini-bridge/` module
+- Opus reviews ALL worker output (Sonnet, Codex, or Gemini) before merging
 
 ### Codex Delegation Protocol
 
@@ -65,6 +67,29 @@ Example: task `R2-007` → sanitized `R2-007`; task `feat/login` → sanitized `
 6. **Cleanup**: Remove worktree and branch (two separate commands for WinPS 5.1 compat)
 
 The `codex-bridge/` directory contains a PowerShell module with helper functions for this workflow. See `codex-bridge/README.md` for details.
+
+### Gemini Delegation Protocol
+
+When a task has `"assignee": "gemini"` in task.json:
+
+**Note:** All paths and branch names use a **sanitized task ID** (non-alphanumeric chars except `-_` replaced with `-`).
+Example: task `R2-007` → sanitized `R2-007`; task `feat/login` → sanitized `feat-login`.
+
+1. **Prepare context**: Write a self-contained handoff file (`.task-handoff/gemini-task-{safeId}.md`) with project conventions, task description, acceptance criteria, and relevant source files
+2. **Create worktree**: `git worktree add .worktrees/gemini-{safeId} -b gemini/{safeId}`
+3. **Execute**: `gemini --sandbox "Read <absolute-path-to-handoff-file> and execute"` (Gemini CLI uses plain text output, no JSONL; no session resume support)
+4. **Review**: Opus reads `git diff HEAD...gemini/{safeId}` and evaluates changes
+5. **Accept/Reject**: Merge if acceptable, discard and re-specify if not
+6. **Cleanup**: Remove worktree and branch (two separate commands for WinPS 5.1 compat)
+
+Key differences from Codex delegation:
+- Branch prefix: `gemini/` instead of `codex/`
+- PID marker: `.gemini-pid` instead of `.codex-pid`
+- Blocker file: `.gemini-blockers.md` instead of `.codex-blockers.md`
+- Output format: plain text (not JSONL)
+- No session resume support
+
+The `gemini-bridge/` directory contains a PowerShell module with helper functions for this workflow. See `gemini-bridge/README.md` for details.
 
 ### Parallel Execution Strategy
 

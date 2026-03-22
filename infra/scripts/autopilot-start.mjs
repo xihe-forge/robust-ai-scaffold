@@ -26,6 +26,7 @@ import {
   renderRunnerSummary,
   resolveRunnerProfile
 } from "./lib/autopilot-runner.mjs";
+import { notify, notifyStateChange } from "./lib/notifications.mjs";
 
 const args = process.argv.slice(2);
 const isDryRun = args.includes("--dry-run");
@@ -429,6 +430,28 @@ function checkCodexPrerequisites() {
 }
 
 /**
+ * Checks whether Gemini delegation prerequisites are available.
+ * Returns { available: boolean, issues: string[] }
+ */
+function checkGeminiPrerequisites() {
+  const issues = [];
+  const bridgePath = path.join(rootDir, "gemini-bridge", "GeminiBridge.psm1");
+  if (!pathExists(bridgePath)) {
+    issues.push("gemini-bridge/GeminiBridge.psm1 not found");
+  }
+  // Check gemini CLI availability
+  try {
+    const result = execSync("gemini --version", { timeout: 10000, stdio: "pipe", shell: process.platform === "win32" });
+    if (!result || !result.toString().trim()) {
+      issues.push("gemini CLI found but returned empty version");
+    }
+  } catch {
+    issues.push("gemini CLI not found or not executable (install with: npm install -g @google/gemini-cli)");
+  }
+  return { available: issues.length === 0, issues };
+}
+
+/**
  * Builds Codex delegation instructions for the prompt.
  * When Opus is the main runner but a task is assigned to Codex,
  * instruct Opus to delegate via the codex-bridge module.
@@ -467,6 +490,48 @@ function buildCodexDelegationBlock(task) {
     `d. Accept or reject:`,
     `   \`\`\`powershell`,
     `   Complete-CodexTask -Result $result -Verdict "accept" -ProjectRoot '${absRoot}'  # or "reject"`,
+    `   \`\`\``,
+    ``,
+    `IMPORTANT: Always use the module API above. Do NOT run manual git worktree/merge/branch commands.`,
+    ``
+  ].join("\n");
+}
+
+/**
+ * Builds Gemini delegation instructions for the prompt.
+ * When Opus is the main runner but a task is assigned to Gemini,
+ * instruct Opus to delegate via the gemini-bridge module.
+ *
+ * Uses absolute paths and powershell.exe (not pwsh) for WinPS 5.1 compatibility.
+ */
+function buildGeminiDelegationBlock(task) {
+  const rawId = task.id;
+  const safeId = sanitizeTaskId(rawId);
+  const absRoot = rootDir.replace(/\//g, "\\").replace(/'/g, "''");
+  const absHandoff = `${absRoot}\\.task-handoff\\gemini-task-${safeId}.md`;
+  const absWorktree = `${absRoot}\\.worktrees\\gemini-${safeId}`;
+  const modulePath = `${absRoot}\\gemini-bridge\\GeminiBridge.psm1`;
+  const escapePs = (s) => (s ?? "").replace(/'/g, "''").replace(/[\r\n]+/g, " ");
+  const escapedRawId = escapePs(rawId);
+  const escapedName = escapePs(task.name);
+  return [
+    `This task is assigned to **Gemini (Google)**. Delegate via the GeminiBridge PowerShell module.`,
+    ``,
+    `a. First, analyze the task and identify which source files Gemini needs as context.`,
+    `b. Import the module and run the full lifecycle in one call:`,
+    `   \`\`\`powershell`,
+    `   Import-Module '${modulePath}'`,
+    `   $task = @{ id='${escapedRawId}'; name='${escapedName}'; description='${escapePs(task.description)}'; steps=@(${(task.steps ?? []).map(s => `'${escapePs(s)}'`).join(",")}); acceptance_criteria=@(${(task.acceptance_criteria ?? []).map(s => `'${escapePs(s)}'`).join(",")}) }`,
+    `   $result = Invoke-Gemini -TaskId '${escapedRawId}' -Task $task -ProjectRoot '${absRoot}'`,
+    `   \`\`\``,
+    `c. Review the result using module functions:`,
+    `   \`\`\`powershell`,
+    `   $review = Get-GeminiReviewSummary -Result $result -ProjectRoot '${absRoot}'`,
+    `   Format-GeminiReviewForClaude -Review $review`,
+    `   \`\`\``,
+    `d. Accept or reject:`,
+    `   \`\`\`powershell`,
+    `   Complete-GeminiTask -Result $result -Verdict "accept" -ProjectRoot '${absRoot}'  # or "reject"`,
     `   \`\`\``,
     ``,
     `IMPORTANT: Always use the module API above. Do NOT run manual git worktree/merge/branch commands.`,
@@ -709,7 +774,8 @@ function buildPrompt(readyTasks, config) {
   if (readyTasks.length > 1) {
     // Partition tasks by assignee
     const codexTasks = readyTasks.filter((t) => t.assignee === "codex");
-    const sonnetTasks = readyTasks.filter((t) => t.assignee !== "codex" && t.assignee !== "opus");
+    const geminiTasks = readyTasks.filter((t) => t.assignee === "gemini");
+    const sonnetTasks = readyTasks.filter((t) => t.assignee !== "codex" && t.assignee !== "gemini" && t.assignee !== "opus");
     const opusTasks = readyTasks.filter((t) => t.assignee === "opus");
 
     let taskList = "";
@@ -746,6 +812,18 @@ function buildPrompt(readyTasks, config) {
       );
       for (const ct of codexTasks) {
         strategyParts.push("", `**${ct.id}: ${ct.name}**`, buildCodexDelegationBlock(ct));
+      }
+    }
+
+    // Gemini delegation instructions
+    if (geminiTasks.length > 0) {
+      strategyParts.push(
+        "",
+        `### Gemini Tasks (${geminiTasks.length} tasks)`,
+        "These tasks are assigned to Gemini. For each one:"
+      );
+      for (const gt of geminiTasks) {
+        strategyParts.push("", `**${gt.id}: ${gt.name}**`, buildGeminiDelegationBlock(gt));
       }
     }
 
@@ -836,6 +914,30 @@ function buildPrompt(readyTasks, config) {
         "",
         "1. Read AGENTS.md and relevant docs for this task.",
         `2. ${buildCodexDelegationBlock(task)}`,
+        "3. After reviewing and merging (or rejecting):",
+        "   - Run verification: build, lint, or test as appropriate.",
+        "   - Update dev/task.json (set status to done).",
+        "   - Update dev/progress.txt with what was accomplished.",
+        "   - Update .planning/STATE.md if any decisions were made.",
+        "   - Git commit all final changes together.",
+        reviewGateBlock,
+        "",
+        "## Deviation Rules",
+        "If you encounter unexpected situations during execution, follow AGENTS.md deviation rules:",
+        "- D1-D3 (cosmetic, missing dep, unrelated test failure): Auto-fix and log in progress.txt",
+        "- D4-D5 (ambiguous requirement, architectural decision): STOP immediately, mark task as blocked in task.json, log reason in STATE.md"
+      ].join("\n");
+    }
+
+    // Gemini-assigned task: delegate via gemini-bridge
+    if (task.assignee === "gemini") {
+      return [
+        ...taskHeader,
+        "## Execution Strategy — Gemini Delegation",
+        "You are the Opus orchestrator. This task is assigned to Gemini.",
+        "",
+        "1. Read AGENTS.md and relevant docs for this task.",
+        `2. ${buildGeminiDelegationBlock(task)}`,
         "3. After reviewing and merging (or rejecting):",
         "   - Run verification: build, lint, or test as appropriate.",
         "   - Update dev/task.json (set status to done).",
@@ -952,10 +1054,13 @@ function buildFinalReviewPrompt(config, round, previousFindings) {
   const docReviewers = finalReviewConfig.parallel_reviewers?.docs ?? ["opus"];
   const codeReviewers = finalReviewConfig.parallel_reviewers?.code ?? ["sonnet"];
   const codexAvailable = checkCodexPrerequisites().available;
+  const geminiAvailable = checkGeminiPrerequisites().available;
 
-  // Filter out codex if not available
-  const activeDocReviewers = codexAvailable ? docReviewers : docReviewers.filter((r) => r !== "codex");
-  const activeCodeReviewers = codexAvailable ? codeReviewers : codeReviewers.filter((r) => r !== "codex");
+  // Filter out codex/gemini if not available
+  let activeDocReviewers = codexAvailable ? docReviewers : docReviewers.filter((r) => r !== "codex");
+  activeDocReviewers = geminiAvailable ? activeDocReviewers : activeDocReviewers.filter((r) => r !== "gemini");
+  let activeCodeReviewers = codexAvailable ? codeReviewers : codeReviewers.filter((r) => r !== "codex");
+  activeCodeReviewers = geminiAvailable ? activeCodeReviewers : activeCodeReviewers.filter((r) => r !== "gemini");
 
   const reviewToolsSection = Object.entries(planConfig?.review_tools ?? {})
     .map(([name, info]) => `- **${name}**: ${info.description}`)
@@ -1007,6 +1112,15 @@ function buildFinalReviewPrompt(config, round, previousFindings) {
         "Output findings as a structured list in the handoff result.",
         ""
       );
+    } else if (reviewer === "gemini") {
+      parts.push(
+        "### Gemini — Document Review",
+        "Delegate to Gemini CLI via gemini-bridge (see AGENTS.md Gemini Delegation Protocol).",
+        "Gemini reviews: MRD completeness, PRD quality, tech spec accuracy, design doc alignment.",
+        "For frontend design docs: cross-check against .ai/skills/impeccable/frontend-design.md standards.",
+        "Output findings as a structured list in the handoff result.",
+        ""
+      );
     } else {
       const model = reviewer === "opus" ? "opus" : "sonnet";
       parts.push(
@@ -1028,6 +1142,15 @@ function buildFinalReviewPrompt(config, round, previousFindings) {
         "### Codex — Code & Test Review",
         "Delegate to Codex CLI via codex-bridge.",
         "Codex reviews: code quality, test coverage (build PRD-to-test matrix), TDD compliance, security.",
+        "For frontend: apply .ai/skills/impeccable/audit.md + .ai/skills/vercel-web-design/web-design-guidelines.md.",
+        "Output findings as a structured list.",
+        ""
+      );
+    } else if (reviewer === "gemini") {
+      parts.push(
+        "### Gemini — Code & Test Review",
+        "Delegate to Gemini CLI via gemini-bridge.",
+        "Gemini reviews: code quality, test coverage (build PRD-to-test matrix), TDD compliance, security.",
         "For frontend: apply .ai/skills/impeccable/audit.md + .ai/skills/vercel-web-design/web-design-guidelines.md.",
         "Output findings as a structured list.",
         ""
@@ -1778,6 +1901,7 @@ async function main() {
   saveState({ ...state, status: "starting" });
 
   process.on("SIGINT", () => {
+    notify("stopped", { reason: "SIGINT (user interrupt)" }).catch?.(() => {});
     saveState({ ...loadState(), status: "stopped" });
     process.exit(130);
   });
@@ -1787,6 +1911,7 @@ async function main() {
   while (true) {
     if (pathExists(".autopilot/.stop")) {
       saveState({ ...loadState(), status: "stopped" });
+      notify("stopped", { reason: "stop signal detected" }).catch?.(() => {});
       console.log("Stop signal detected. Autopilot is stopping.");
       break;
     }
@@ -1803,16 +1928,32 @@ async function main() {
         for (const issue of codexCheck.issues) console.warn(`  - ${issue}`);
         for (const ct of codexTasks) console.warn(`  - Skipped: ${ct.id} (${ct.name})`);
         readyTasks = readyTasks.filter((t) => t.assignee !== "codex");
-        if (readyTasks.length === 0) {
-          console.warn(`[autopilot] No non-codex tasks ready. Waiting for next round.`);
-          if (runOnce) break;
-          await waitWithCountdown(1);
-          continue;
-        }
       }
     }
 
-    // Compute task/model/prompt AFTER codex filtering so they reflect the actual work (#R4-3)
+    // Pre-flight: if any ready task needs gemini, verify prerequisites — skip gemini tasks if not available
+    const geminiCheck = checkGeminiPrerequisites();
+    if (!geminiCheck.available) {
+      const geminiTasks = readyTasks.filter((t) => t.assignee === "gemini");
+      if (geminiTasks.length > 0) {
+        console.warn(`[autopilot] Gemini prerequisites missing — skipping ${geminiTasks.length} gemini-assigned task(s):`);
+        for (const issue of geminiCheck.issues) console.warn(`  - ${issue}`);
+        for (const gt of geminiTasks) console.warn(`  - Skipped: ${gt.id} (${gt.name})`);
+        readyTasks = readyTasks.filter((t) => t.assignee !== "gemini");
+      }
+    }
+
+    if (readyTasks.length === 0) {
+      const originalReady = getReadyTasks();
+      if (originalReady.length > 0) {
+        console.warn(`[autopilot] All ready tasks require unavailable CLI tools. Waiting for next round.`);
+        if (runOnce) break;
+        await waitWithCountdown(1);
+        continue;
+      }
+    }
+
+    // Compute task/model/prompt AFTER codex/gemini filtering so they reflect the actual work
     const task = readyTasks.length > 0 ? readyTasks[0] : null;
     const model = resolveModel(task, config);
     const prompt = buildPrompt(readyTasks, config);
@@ -1852,6 +1993,8 @@ async function main() {
     console.log(`Mode: ${task ? `task ${task.id}` : "idle planning"}`);
     if (task?.assignee === "codex") {
       console.log(`Assignee: codex (delegation via Opus prompt)`);
+    } else if (task?.assignee === "gemini") {
+      console.log(`Assignee: gemini (delegation via Opus prompt)`);
     } else if (task?.assignee) {
       console.log(`Assignee: ${task.assignee}`);
     }
@@ -1896,6 +2039,16 @@ async function main() {
       status: taskMetricsStatus
     });
 
+    // Notify on task completion or failure (non-blocking)
+    if (result.exitCode === 0 && task) {
+      notify("task_completed", {
+        task_id: task.id,
+        task_name: task.name,
+        duration: formatDuration(taskDurationMs / 1000),
+        cost: result.costUsd ?? 0
+      }).catch?.(() => {});
+    }
+
     if (result.failureCategory === "timeout") {
       const taskId = task?.id ?? null;
       const maxTaskRetries = config.loop.maxTaskRetries ?? 2;
@@ -1923,6 +2076,11 @@ async function main() {
         console.error(
           `Task ${taskId ?? "(idle)"} timed out and exceeded max task retries (${maxTaskRetries}). Marking as failed and moving on.`
         );
+        notify("task_failed", {
+          task_id: taskId ?? "idle",
+          error: result.failureHint ?? "timeout",
+          retry_count: nextTaskRetries
+        }).catch?.(() => {});
         appendFileSync(
           ".autopilot/logs/autopilot.log",
           `[timeout-skip] task=${taskId ?? "idle"} retries=${nextTaskRetries} hint=${result.failureHint ?? ""}\n`,
@@ -2003,6 +2161,11 @@ async function main() {
                 console.log("╚══════════════════════════════════════════════════════════╝");
                 console.log("");
                 saveState({ ...loadState(), status: "awaiting_user_decision" });
+                notify("awaiting_user_decision", {
+                  unresolved_issues: "dev/review/FINAL-REVIEW-UNRESOLVED.md",
+                  review_rounds_completed: reviewRound,
+                  options: ["pnpm work --continue-review", "pnpm work --accept-as-is"]
+                }).catch?.(() => {});
                 break;
               }
 
@@ -2014,6 +2177,10 @@ async function main() {
             reviewRound += 1;
             console.log("");
             console.log(`=== FINAL ITERATION REVIEW — Round ${reviewRound}/${maxRounds} ===`);
+            notify("final_review_started", {
+              round_number: reviewRound,
+              max_rounds: maxRounds
+            }).catch?.(() => {});
 
             const previousFindingsPath = `dev/review/FINAL-REVIEW-ROUND-${reviewRound - 1}.md`;
             const previousFindings = reviewRound > 1 ? readText(previousFindingsPath, null) : null;
@@ -2087,6 +2254,10 @@ async function main() {
               }
 
               console.log(`Review round ${reviewRound} found no new issues. Review CONVERGED.`);
+              notify("final_review_done", {
+                rounds_taken: reviewRound,
+                issues_found: 0
+              }).catch?.(() => {});
               saveState({ ...loadState(), status: "final_review_done" });
               break;
             }
@@ -2126,6 +2297,9 @@ async function main() {
             continue;
           }
 
+          notify("all_tasks_done", {
+            total_tasks: finalSummary.total
+          }).catch?.(() => {});
           console.log(`All tasks completed! (${finalSummary.done}/${finalSummary.total})`);
           break;
         }
@@ -2152,6 +2326,10 @@ async function main() {
     const retryCount = loadState().retryCount ?? 0;
     if (result.failureCategory !== "quota" && retryCount >= (config.loop.maxRetries ?? 12)) {
       saveState({ ...loadState(), status: "error" });
+      notify("error", {
+        error_message: `Max retries reached (${retryCount})`,
+        last_hint: result.failureHint ?? ""
+      }).catch?.(() => {});
       console.error(`Autopilot stopped after reaching max retries (${retryCount}).`);
       process.exit(1);
     }
@@ -2164,6 +2342,11 @@ async function main() {
       if (result.failureHint) {
         console.log(`  Hint: ${result.failureHint.slice(0, 200)}`);
       }
+      notify("quota_wait", {
+        retry_after_seconds: result.retryAfterSeconds ?? null,
+        quota_type: result.failureCategory,
+        retry_count: retryCount
+      }).catch?.(() => {});
     } else {
       console.log(`AI exited with code ${result.exitCode}. Waiting before retry ${retryCount}/${config.loop.maxRetries}.`);
       if (result.failureHint) {
@@ -2194,6 +2377,10 @@ if (isDirectRun) {
       status: "error",
       lastError: String(error)
     });
+    notify("error", {
+      error_message: String(error),
+      stack: error?.stack ?? ""
+    }).catch?.(() => {});
     console.error(error);
     process.exit(1);
   });
