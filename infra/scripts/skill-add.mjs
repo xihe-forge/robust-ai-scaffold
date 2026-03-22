@@ -9,9 +9,11 @@ import {
   readJson,
   rootDir,
   runCommand,
+  slugify,
   withReadline,
   writeJson
 } from "./lib/utils.mjs";
+import { checkCircularDependencies } from "./lib/skill-utils.mjs";
 
 const REGISTRY_PATH = ".ai/skills/skill-registry.json";
 const SKILLS_DIR = ".ai/skills";
@@ -137,38 +139,6 @@ function loadRegistry() {
   });
 }
 
-function checkCircularDependencies(registry) {
-  const allSkills = {};
-  for (const [moduleName, moduleData] of Object.entries(registry.skills)) {
-    if (moduleData.skills) {
-      for (const [skillName, skillData] of Object.entries(moduleData.skills)) {
-        allSkills[`${moduleName}/${skillName}`] = skillData.depends_on || null;
-      }
-    }
-  }
-
-  function hasCycle(skillId, visited = new Set()) {
-    if (visited.has(skillId)) {
-      return true;
-    }
-    visited.add(skillId);
-    const dep = allSkills[skillId];
-    if (dep && allSkills[dep]) {
-      return hasCycle(dep, visited);
-    }
-    return false;
-  }
-
-  const cycles = [];
-  for (const skillId of Object.keys(allSkills)) {
-    if (hasCycle(skillId)) {
-      cycles.push(skillId);
-    }
-  }
-
-  return cycles;
-}
-
 // --- Main ---
 
 async function main() {
@@ -191,7 +161,11 @@ async function main() {
     process.exit(1);
   }
 
-  const moduleName = parsed.repo;
+  const moduleName = slugify(parsed.repo);
+  if (!moduleName) {
+    console.error(`Error: Repository name "${parsed.repo}" produced an empty module name after sanitization.`);
+    process.exit(1);
+  }
   const submodulePath = `${SKILLS_DIR}/${moduleName}`;
   const absoluteSubmodulePath = path.join(rootDir, submodulePath);
 
@@ -409,14 +383,6 @@ async function main() {
     // Write registry
     writeJson(REGISTRY_PATH, registry);
     console.log(`\nUpdated ${REGISTRY_PATH}`);
-
-    // Validate JSON
-    try {
-      JSON.parse(JSON.stringify(registry));
-      console.log("Registry JSON is valid.");
-    } catch (e) {
-      console.error(`Error: Registry JSON is invalid: ${e.message}`);
-    }
 
     // Summary
     console.log("\n--- Summary ---\n");

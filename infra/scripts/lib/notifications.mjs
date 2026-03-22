@@ -21,14 +21,19 @@ const DEFAULT_NOTIFICATION_CONFIG = {
 
 // ─── Configuration ──────────────────────────────────────────────────────────
 
+/** Lazy singleton — loaded once on first use. */
+let _cachedConfig = null;
+
 /**
  * Load notification settings from `.autopilot/config.json` under the
  * `notifications` key.  Returns the merged config (defaults + overrides).
+ * Result is cached after the first call.
  */
 export function loadNotificationConfig() {
+  if (_cachedConfig !== null) return _cachedConfig;
   const raw = readJson(".autopilot/config.json", {});
   const userConfig = raw?.notifications ?? {};
-  return {
+  _cachedConfig = {
     ...DEFAULT_NOTIFICATION_CONFIG,
     ...userConfig,
     events: {
@@ -36,6 +41,7 @@ export function loadNotificationConfig() {
       ...(userConfig.events ?? {})
     }
   };
+  return _cachedConfig;
 }
 
 // ─── Log helpers ─────────────────────────────────────────────────────────────
@@ -85,8 +91,9 @@ function postWebhook(url, payload) {
  *
  * @param {string} event   - Event name (e.g. "task_completed")
  * @param {object} details - Arbitrary details to include
+ * @returns {Promise<void>}
  */
-export function notify(event, details = {}) {
+export async function notify(event, details = {}) {
   const config = loadNotificationConfig();
 
   // Always log regardless of enabled flag
@@ -96,8 +103,8 @@ export function notify(event, details = {}) {
     return;
   }
 
-  // Check if this specific event type is enabled
-  if (config.events[event] === false) {
+  // Check if this specific event type is enabled (falsy = disabled)
+  if (!config.events[event]) {
     return;
   }
 

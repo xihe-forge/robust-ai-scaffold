@@ -1,31 +1,8 @@
-import { mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
-import { execSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import path from "node:path";
 import process from "node:process";
-
-// ─── File helpers (same pattern as autopilot-status.mjs) ─────────────────────
-
-const rootDir = process.cwd();
-
-function resolvePath(rel) {
-  return path.isAbsolute(rel) ? rel : path.join(rootDir, rel);
-}
-
-function readJson(rel, fallback = null) {
-  try {
-    return JSON.parse(readFileSync(resolvePath(rel), "utf8"));
-  } catch {
-    return fallback;
-  }
-}
-
-function readText(rel, fallback = "") {
-  try {
-    return readFileSync(resolvePath(rel), "utf8");
-  } catch {
-    return fallback;
-  }
-}
+import { rootDir, resolvePath, readJson, readText } from "./lib/utils.mjs";
 
 function lastLines(text, n) {
   return text
@@ -432,14 +409,20 @@ function main() {
 
   // Try to open in browser
   try {
+    let result;
     if (process.platform === "win32") {
-      execSync(`start "" "${outputPath}"`, { stdio: "ignore", shell: true });
+      // Use cmd /c start with argument array to avoid shell injection
+      result = spawnSync("cmd.exe", ["/c", "start", "", outputPath], { stdio: "ignore", shell: false });
     } else if (process.platform === "darwin") {
-      execSync(`open "${outputPath}"`, { stdio: "ignore" });
+      result = spawnSync("open", [outputPath], { stdio: "ignore", shell: false });
     } else {
-      execSync(`xdg-open "${outputPath}"`, { stdio: "ignore" });
+      result = spawnSync("xdg-open", [outputPath], { stdio: "ignore", shell: false });
     }
-    console.log("Opened dashboard in default browser.");
+    if (result && result.status === 0) {
+      console.log("Opened dashboard in default browser.");
+    } else {
+      console.log("Could not auto-open browser. Open the file manually.");
+    }
   } catch {
     console.log("Could not auto-open browser. Open the file manually.");
   }

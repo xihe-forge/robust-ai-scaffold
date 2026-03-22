@@ -14,6 +14,7 @@ import {
   writeJson,
   writeText
 } from "./lib/utils.mjs";
+import { checkCircularDependencies } from "./lib/skill-utils.mjs";
 
 const REGISTRY_PATH = ".ai/skills/skill-registry.json";
 const SKILLS_DIR = ".ai/skills";
@@ -44,38 +45,6 @@ function getExistingSkillIds(registry) {
     }
   }
   return ids;
-}
-
-function checkCircularDependencies(registry) {
-  const allSkills = {};
-  for (const [moduleName, moduleData] of Object.entries(registry.skills)) {
-    if (moduleData.skills) {
-      for (const [skillName, skillData] of Object.entries(moduleData.skills)) {
-        allSkills[`${moduleName}/${skillName}`] = skillData.depends_on || null;
-      }
-    }
-  }
-
-  function hasCycle(skillId, visited = new Set()) {
-    if (visited.has(skillId)) {
-      return true;
-    }
-    visited.add(skillId);
-    const dep = allSkills[skillId];
-    if (dep && allSkills[dep]) {
-      return hasCycle(dep, visited);
-    }
-    return false;
-  }
-
-  const cycles = [];
-  for (const skillId of Object.keys(allSkills)) {
-    if (hasCycle(skillId)) {
-      cycles.push(skillId);
-    }
-  }
-
-  return cycles;
 }
 
 // --- Skill File Generation ---
@@ -157,15 +126,23 @@ async function main() {
 
       if (moduleIndex === 0) {
         isNewModule = true;
-        moduleName = await promptText(rl, "New module name (kebab-case)");
-        moduleName = slugify(moduleName);
+        const rawModuleName = await promptText(rl, "New module name (kebab-case)");
+        moduleName = slugify(rawModuleName);
+        if (!moduleName) {
+          console.error(`Error: Module name "${rawModuleName}" produced an empty slug. Use alphanumeric characters.`);
+          process.exit(1);
+        }
       } else {
         moduleName = existingModules[moduleIndex - 1];
       }
     } else {
       isNewModule = true;
-      moduleName = await promptText(rl, "Module name (kebab-case)");
-      moduleName = slugify(moduleName);
+      const rawModuleName = await promptText(rl, "Module name (kebab-case)");
+      moduleName = slugify(rawModuleName);
+      if (!moduleName) {
+        console.error(`Error: Module name "${rawModuleName}" produced an empty slug. Use alphanumeric characters.`);
+        process.exit(1);
+      }
     }
 
     if (!moduleName) {

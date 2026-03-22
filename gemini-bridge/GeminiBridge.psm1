@@ -264,7 +264,7 @@ function Invoke-Gemini {
     # Step 4: Verify Gemini is available (lazy discovery)
     $geminiExe = Find-GeminiExe
     if (-not $geminiExe) {
-        throw "Gemini CLI not found. Install with: npm install -g @anthropic-ai/gemini-cli or follow https://github.com/anthropics/gemini-cli"
+        throw "Gemini CLI not found. Install with: npm install -g @google/gemini-cli or follow https://github.com/google-gemini/gemini-cli"
     }
 
     # Step 5: Read task file content for prompt
@@ -272,8 +272,7 @@ function Invoke-Gemini {
 
     # Step 6: Build Gemini command
     # Gemini CLI invocation: gemini -m <model> "prompt"
-    # Uses sandbox mode for automated execution (--sandbox)
-    $geminiArgs = @("--sandbox")
+    $geminiArgs = @()
     if ($Model) {
         # Whitelist validation to prevent command injection via --model parameter
         if ($Model -notmatch '^[a-zA-Z0-9._/-]+$') {
@@ -299,7 +298,7 @@ $taskContent
     if ($geminiExe -match '\.(cmd|bat)$') {
         $psi.FileName = $env:COMSPEC  # cmd.exe
         $escapedArgs = ($geminiArgs -join " ")
-        $psi.Arguments = "/c `"$geminiExe $escapedArgs`""
+        $psi.Arguments = "/c `"`"$geminiExe`" $escapedArgs`""
     } else {
         $psi.FileName = $geminiExe
         $psi.Arguments = $geminiArgs -join " "
@@ -313,8 +312,8 @@ $taskContent
     $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
     $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
 
-    # Set environment for UTF-8
-    $psi.EnvironmentVariables["PYTHONIOENCODING"] = "utf-8"
+    # Set environment for non-interactive / CI mode
+    $psi.EnvironmentVariables["CI"] = "true"
 
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $psi

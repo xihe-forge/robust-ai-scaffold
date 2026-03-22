@@ -464,8 +464,6 @@ function buildCodexDelegationBlock(task) {
   // Use absolute paths so commands work regardless of CWD
   // Escape single quotes for safe embedding in PS -Command strings (#R4-6)
   const absRoot = rootDir.replace(/\//g, "\\").replace(/'/g, "''");
-  const absHandoff = `${absRoot}\\.task-handoff\\codex-task-${safeId}.md`;
-  const absWorktree = `${absRoot}\\.worktrees\\codex-${safeId}`;
   const modulePath = `${absRoot}\\codex-bridge\\CodexBridge.psm1`;
   // Escape single quotes in rawId for safe PS single-quoted string embedding
   // Escape for PS single-quoted strings: ' → '' and strip newlines (single-line assignment)
@@ -508,8 +506,6 @@ function buildGeminiDelegationBlock(task) {
   const rawId = task.id;
   const safeId = sanitizeTaskId(rawId);
   const absRoot = rootDir.replace(/\//g, "\\").replace(/'/g, "''");
-  const absHandoff = `${absRoot}\\.task-handoff\\gemini-task-${safeId}.md`;
-  const absWorktree = `${absRoot}\\.worktrees\\gemini-${safeId}`;
   const modulePath = `${absRoot}\\gemini-bridge\\GeminiBridge.psm1`;
   const escapePs = (s) => (s ?? "").replace(/'/g, "''").replace(/[\r\n]+/g, " ");
   const escapedRawId = escapePs(rawId);
@@ -1039,7 +1035,7 @@ function buildPrompt(readyTasks, config) {
  * @param {string|null} previousFindings - Summary of previous round findings, or null for first round
  * @returns {string} The final review prompt
  */
-function buildFinalReviewPrompt(config, round, previousFindings) {
+function buildFinalReviewPrompt(config, round, previousFindings, { codexAvailable, geminiAvailable } = {}) {
   const progress = getProgressTail();
   const summary = getTaskProgressSummary();
   const planConfig = readJson(".planning/config.json", {});
@@ -1053,14 +1049,15 @@ function buildFinalReviewPrompt(config, round, previousFindings) {
   });
   const docReviewers = finalReviewConfig.parallel_reviewers?.docs ?? ["opus"];
   const codeReviewers = finalReviewConfig.parallel_reviewers?.code ?? ["sonnet"];
-  const codexAvailable = checkCodexPrerequisites().available;
-  const geminiAvailable = checkGeminiPrerequisites().available;
+  // Use pre-computed prereq results if provided, otherwise compute once here
+  const _codexAvailable = codexAvailable ?? checkCodexPrerequisites().available;
+  const _geminiAvailable = geminiAvailable ?? checkGeminiPrerequisites().available;
 
   // Filter out codex/gemini if not available
-  let activeDocReviewers = codexAvailable ? docReviewers : docReviewers.filter((r) => r !== "codex");
-  activeDocReviewers = geminiAvailable ? activeDocReviewers : activeDocReviewers.filter((r) => r !== "gemini");
-  let activeCodeReviewers = codexAvailable ? codeReviewers : codeReviewers.filter((r) => r !== "codex");
-  activeCodeReviewers = geminiAvailable ? activeCodeReviewers : activeCodeReviewers.filter((r) => r !== "gemini");
+  let activeDocReviewers = _codexAvailable ? docReviewers : docReviewers.filter((r) => r !== "codex");
+  activeDocReviewers = _geminiAvailable ? activeDocReviewers : activeDocReviewers.filter((r) => r !== "gemini");
+  let activeCodeReviewers = _codexAvailable ? codeReviewers : codeReviewers.filter((r) => r !== "codex");
+  activeCodeReviewers = _geminiAvailable ? activeCodeReviewers : activeCodeReviewers.filter((r) => r !== "gemini");
 
   const reviewToolsSection = Object.entries(planConfig?.review_tools ?? {})
     .map(([name, info]) => `- **${name}**: ${info.description}`)
@@ -2185,7 +2182,10 @@ async function main() {
             const previousFindingsPath = `dev/review/FINAL-REVIEW-ROUND-${reviewRound - 1}.md`;
             const previousFindings = reviewRound > 1 ? readText(previousFindingsPath, null) : null;
 
-            const reviewPrompt = buildFinalReviewPrompt(config, reviewRound, previousFindings);
+            const reviewPrompt = buildFinalReviewPrompt(config, reviewRound, previousFindings, {
+              codexAvailable: codexCheck.available,
+              geminiAvailable: geminiCheck.available
+            });
             const reviewModel = config.models.planning;
 
             saveState({
