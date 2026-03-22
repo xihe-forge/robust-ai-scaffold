@@ -206,7 +206,7 @@ For production scale:
 
 ## 3. Review Checklist for Error Handling & Logging
 
-When reviewing code (Stage 4b of review-code.md), verify:
+When reviewing code (Stage 4c of review-code.md), verify:
 
 - [ ] No internal error details exposed in API responses (grep for stack traces in responses)
 - [ ] All API endpoints use the standard error response shape

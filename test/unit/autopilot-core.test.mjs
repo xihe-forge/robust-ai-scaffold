@@ -26,7 +26,8 @@ import {
 import {
   loadNotificationConfig,
   notify,
-  notifyStateChange
+  notifyStateChange,
+  resetNotificationCache
 } from "../../infra/scripts/lib/notifications.mjs";
 
 import {
@@ -1444,12 +1445,14 @@ describe("loadNotificationConfig", () => {
 
   beforeEach(() => {
     originalConfig = saveFixture(".autopilot/config.json");
+    resetNotificationCache();
   });
 
   afterEach(() => {
     if (originalConfig !== null) {
       writeFixture(".autopilot/config.json", originalConfig);
     }
+    resetNotificationCache();
   });
 
   it("returns defaults when config file has no notifications key", () => {
@@ -1505,6 +1508,7 @@ describe("notifyStateChange", () => {
 
   beforeEach(() => {
     originalConfig = saveFixture(".autopilot/config.json");
+    resetNotificationCache();
     // Disable notifications so no webhook calls happen, but logging still occurs
     writeFixture(".autopilot/config.json", JSON.stringify({ notifications: { enabled: false } }));
   });
@@ -1513,6 +1517,7 @@ describe("notifyStateChange", () => {
     if (originalConfig !== null) {
       writeFixture(".autopilot/config.json", originalConfig);
     }
+    resetNotificationCache();
   });
 
   it("does not throw when state transitions from idle to running", () => {

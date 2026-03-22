@@ -7,43 +7,40 @@ This review is **BLOCKING** — no implementation tasks may begin until MRD/PRD 
 
 ## Required Tools
 
-| Tool | Path | Purpose |
-|------|------|---------|
-| **pm-skills** | `opensource/pm-skills` | 65 PM skills across 8 plugins — validates PM methodology |
-| **superpowers** | `opensource/superpowers` | writing-plans skill — validates plan structure and completeness |
+This review uses the scaffold's built-in review methodology. No external skill modules required.
 
 ## Review Checklist
 
-### Stage 1: MRD Completeness (pm-skills/pm-market-research)
+### Stage 1: MRD Completeness
 
-Apply these pm-skills checks:
+Verify market research coverage:
 
-1. **Persona validation** (`persona-generator`): Are user personas defined with goals, frustrations, and behaviors?
-2. **Market sizing** (`market-sizing`): Is TAM/SAM/SOM estimated with methodology documented?
-3. **Competitive landscape** (`competitive-analysis`): Are direct/indirect competitors mapped with differentiation?
-4. **User journey** (`journey-mapping`): Are key user flows mapped with pain points identified?
-5. **Segmentation** (`segmentation`): Are target segments clearly defined and prioritized?
+1. **Persona validation**: Are user personas defined with goals, frustrations, and behaviors?
+2. **Market sizing**: Is TAM/SAM/SOM estimated with methodology documented?
+3. **Competitive landscape**: Are direct/indirect competitors mapped with differentiation?
+4. **User journey**: Are key user flows mapped with pain points identified?
+5. **Segmentation**: Are target segments clearly defined and prioritized?
 
-### Stage 2: PRD Quality (pm-skills/pm-execution)
+### Stage 2: PRD Quality
 
-Apply these pm-skills checks:
+Verify PRD completeness and rigor:
 
-1. **Problem statement** (`prd-generator`): Is the problem clearly stated from the user's perspective?
+1. **Problem statement**: Is the problem clearly stated from the user's perspective?
 2. **User stories/flows**: Are all user-facing behaviors described as testable stories?
 3. **Acceptance criteria**: Does EVERY requirement have explicit, measurable acceptance criteria?
 4. **Scope boundaries**: Are out-of-scope items explicitly listed?
 5. **Dependencies**: Are external dependencies and assumptions documented?
-6. **Success metrics** (`okr-generator`): Are measurable success criteria defined?
+6. **Success metrics**: Are measurable success criteria defined?
 
-### Stage 3: Strategic Alignment (pm-skills/pm-product-strategy)
+### Stage 3: Strategic Alignment
 
-1. **Vision fit** (`vision-statement`): Does the PRD align with the project vision in PROJECT.md?
-2. **Business model** (`business-model`): Is the value proposition clear?
-3. **Pricing consideration** (`pricing-strategy`): If applicable, is pricing/packaging addressed?
+1. **Vision fit**: Does the PRD align with the project vision in PROJECT.md?
+2. **Business model**: Is the value proposition clear?
+3. **Pricing consideration**: If applicable, is pricing/packaging addressed?
 
-### Stage 4: Plan Structure (superpowers)
+### Stage 4: Plan Structure
 
-Apply superpowers writing-plans skill:
+Verify plan decomposability:
 
 1. **Decomposable**: Can the PRD be broken into independent, parallelizable tasks?
 2. **Testable**: Can each requirement be verified with automated tests?
@@ -63,8 +60,7 @@ Record in `dev/review/REVIEW-MRD-PRD-{date}.md`:
 # MRD/PRD Review: {date}
 
 ## Tools Used
-- pm-skills v{version}: {plugins applied}
-- superpowers: writing-plans
+- Scaffold built-in review methodology
 
 ## Stage 1: MRD Completeness
 - [ ] Personas defined

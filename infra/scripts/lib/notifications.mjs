@@ -29,6 +29,11 @@ let _cachedConfig = null;
  * `notifications` key.  Returns the merged config (defaults + overrides).
  * Result is cached after the first call.
  */
+/** Reset the cached config (for testing only). */
+export function resetNotificationCache() {
+  _cachedConfig = null;
+}
+
 export function loadNotificationConfig() {
   if (_cachedConfig !== null) return _cachedConfig;
   const raw = readJson(".autopilot/config.json", {});

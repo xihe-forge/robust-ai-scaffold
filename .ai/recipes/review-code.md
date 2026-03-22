@@ -9,9 +9,8 @@ This extends the base `review.md` recipe with tool-specific checks.
 
 | Tool | Path | Purpose |
 |------|------|---------|
-| **superpowers** | `opensource/superpowers` | TDD verification, systematic debugging, code review workflow |
-| **impeccable** | `opensource/impeccable` | Frontend code anti-pattern detection |
-| **ui-ux-pro-max-skill** | `opensource/ui-ux-pro-max-skill` | Design implementation compliance |
+| **impeccable** | `.ai/skills/impeccable` | Frontend code anti-pattern detection, design audit |
+| **vercel-web-design** | `.ai/skills/vercel-web-design` | Engineering UX quality gate (a11y, performance, standards) |
 
 ## Review Checklist
 
@@ -27,26 +26,26 @@ All checks from the base review recipe Stage 1 apply:
 
 All checks from the base review recipe Stage 2 apply.
 
-### Stage 3: Development Methodology (superpowers)
+### Stage 3: Development Methodology
 
-Apply superpowers skills:
+Verify development methodology:
 
-1. **TDD compliance** (`test-driven-development`): Was RED-GREEN-REFACTOR followed?
+1. **TDD compliance**: Was RED-GREEN-REFACTOR followed?
    - Were tests written BEFORE implementation?
    - Do tests fail without the implementation (RED)?
    - Does implementation make tests pass (GREEN)?
    - Was code simplified after tests pass (REFACTOR)?
-2. **Verification before completion** (`verification-before-completion`):
+2. **Verification before completion**:
    - Build passes?
    - Lint passes?
    - Type check passes?
    - All tests pass (not just new ones)?
-3. **Systematic debugging** (`systematic-debugging`): If bugs were encountered during implementation:
+3. **Systematic debugging**: If bugs were encountered during implementation:
    - Was root cause identified (not just symptoms)?
    - Is the fix targeted (not a workaround)?
    - Does a regression test exist?
 
-### Stage 4: Frontend Quality (impeccable + ui-ux-pro-max-skill)
+### Stage 4: Frontend Quality (impeccable + vercel-web-design)
 
 For tasks that touch UI code, run:
 
@@ -60,11 +59,11 @@ For tasks that touch UI code, run:
    - No unnecessary re-renders
    - Images optimized
    - Bundle size reasonable
-3. **ui-ux-pro-max-skill**: Design system compliance
-   - Implemented colors match design palette
-   - Typography follows the type scale
-   - Spacing follows the grid system
-   - Components match the specified design style
+3. **vercel-web-design**: Engineering UX quality gate
+   - Accessibility standards met (a11y)
+   - Performance benchmarks satisfied
+   - Web interface guidelines followed
+   - Components follow platform conventions
 
 ### Stage 4b: Frontend Practical Checklist (frontend-review-checklist.md)
 

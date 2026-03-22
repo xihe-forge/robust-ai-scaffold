@@ -176,12 +176,12 @@ Review gate configuration is in `.planning/config.json` under `review_gates`.
 
 | Stage | Recipe | Opensource Tools | Blocking? |
 |-------|--------|-----------------|-----------|
-| **MRD/PRD created** | `.ai/recipes/review-mrd-prd.md` | pm-skills, superpowers | YES |
-| **Tech/Design docs created** | `.ai/recipes/review-tech-design.md` | impeccable, ui-ux-pro-max-skill, open-lovable, superpowers | YES |
-| **Code implementation done** | `.ai/recipes/review-code.md` | superpowers, impeccable, ui-ux-pro-max-skill | YES |
-| **Testing complete** | `.ai/recipes/review-test-coverage.md` | superpowers, pm-skills | YES |
-| **Marketing materials created** | `.ai/recipes/review-marketing.md` | marketingskills, pm-skills | No (advisory) |
-| **Public pages deployed** | `.ai/recipes/review-seo-aeo.md` | xihe-seo-aeo | No (advisory) |
+| **MRD/PRD created** | `.ai/recipes/review-mrd-prd.md` | (scaffold built-in) | YES |
+| **Tech/Design docs created** | `.ai/recipes/review-tech-design.md` | impeccable, vercel-web-design | YES |
+| **Code implementation done** | `.ai/recipes/review-code.md` | impeccable, vercel-web-design | YES |
+| **Testing complete** | `.ai/recipes/review-test-coverage.md` | (scaffold built-in) | YES |
+| **Marketing materials created** | `.ai/recipes/review-marketing.md` | (scaffold built-in) | No (advisory) |
+| **Public pages deployed** | `.ai/recipes/review-seo-aeo.md` | xihe-search-forge | No (advisory) |
 
 **Supplementary Checklists** (referenced by review recipes):
 - `.ai/recipes/frontend-review-checklist.md` — real-world frontend bugs (layout, auth UI, pricing, responsive, i18n). **Mandatory** for all frontend code reviews.

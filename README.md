@@ -23,6 +23,7 @@ The autopilot always runs the strongest model (Opus) as orchestrator. Opus reads
 
 - **Sonnet sub-agents** -- launched with worktree isolation (each gets its own git branch and working directory)
 - **Codex CLI** -- delegated via the `codex-bridge/` PowerShell module for independent coding tasks
+- **Gemini CLI** -- delegated via the `gemini-bridge/` PowerShell module for frontend/design tasks
 - **Opus direct** -- planning/review tasks completed by the orchestrator itself
 
 Task assignment is controlled by the `assignee` field in `dev/task.json` (`"sonnet"`, `"codex"`, or `"opus"`).
@@ -67,6 +68,7 @@ robust-ai-scaffold/
 ├── infra/scripts/      # Autopilot engine, intake flow, health checks
 │   └── lib/            # Shared utilities (ai-runner, autopilot-runner, project-setup, utils)
 ├── codex-bridge/       # PowerShell module for Codex CLI delegation
+├── gemini-bridge/      # PowerShell module for Gemini CLI delegation
 ├── AGENTS.md           # Agent behavior rules (read before every round)
 └── package.json        # All commands: kickoff, work, adopt, health, etc.
 ```
@@ -145,6 +147,9 @@ pnpm autopilot:stop      # Stop the autopilot gracefully
 pnpm autopilot:doctor    # Diagnose autopilot issues
 pnpm nyquist             # Run Nyquist validation check
 pnpm skill:update        # Update skill submodules to latest remote
+pnpm skill:add           # Add an external skill module (git submodule)
+pnpm skill:create        # Create a new custom skill from template
+pnpm dashboard           # Open autopilot dashboard
 pnpm test:unit           # Run unit tests (node --test)
 pnpm dev                 # Start dev servers (turbo)
 pnpm build               # Build all packages (turbo)
@@ -176,8 +181,8 @@ The scaffold's core architecture (autopilot, intake, review pipeline) is self-co
 
 | Module | Role | Source |
 |--------|------|--------|
-| **impeccable** | Frontend design generation & refinement, anti-AI-slop aesthetics (9 skills + 7 reference docs) | [impeccable](https://github.com/garkgodwin/impeccable) |
-| **vercel-web-design** | Engineering UX quality gate (accessibility, performance, standards) | [vercel-labs](https://github.com/vercel-labs/web-interface-guidelines) |
+| **impeccable** | Frontend design generation & refinement, anti-AI-slop aesthetics (9 skills + 7 reference docs) | [impeccable](https://github.com/pbakaus/impeccable) |
+| **vercel-web-design** | Engineering UX quality gate (accessibility, performance, standards) | [vercel-labs](https://github.com/vercel-labs/agent-skills) |
 
 These two modules are **complementary**: impeccable handles visual aesthetics (anti-AI-slop), Vercel handles engineering standards (a11y, performance, UX). Both are used together during reviews and final iteration.
 
